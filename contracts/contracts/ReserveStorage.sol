@@ -7,6 +7,10 @@ pragma solidity 0.8.9;
  * @notice Ethereum Slashing Insurance (SLI) ReserveStorage contract
  **/
 contract ReserveStorage {
+    mapping(address => address[]) public playerNeighbors;
+
+    ///////////OLD STORGAE////////////////
+
     //address of the FunctionsConsumer contract
     address oracle;
     address public oracleGateway;
