@@ -2,4 +2,8 @@
 .DS_Store
 /node_modules
 /.vscode
-.gitignore
+/artifacts
+/cache
+/.config
+/.local
+/.cache
