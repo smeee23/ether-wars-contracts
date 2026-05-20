@@ -294,4 +294,8 @@ contract WorldGraph {
         assembly { mstore(frontier, count) }
         return frontier;
     }
+
+    function isNeighbor(address a, address b) public view returns (bool) {
+        return isNeighbor[a][b];
+    }
 }

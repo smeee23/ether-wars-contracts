@@ -1,124 +1,297 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity 0.8.9;
 
-import "@openzeppelin/contracts/proxy/Clones.sol";
-import "./WorldGraph.sol";
+import { IERC20 } from "./interfaces/other/IERC20.sol";
+import { IWETHGateway } from "./interfaces/aave/IWETHGateway.sol";
+import { SafeERC20 } from "./libraries/SafeERC20.sol";
+import "@openzeppelin/contracts/proxy/utils/Initializable.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import { IPremiumGenerator } from "./interfaces/protocol/IPremiumGenerator.sol";
+import {IWorldGraph} from "./interfaces/protocol/IWorldGraph.sol";
 
-interface ILandLord {
+/********************
+ *   LANDLORD LOGIC   *
+ * 
+ * There will be resources which the player uses to purchase:
+
+uint256 public armyPoints;
+uint256 public defensePoints;
+uint256 public populationPoints;
+
+Population/food will be like the health and if that ratio falls 
+too low vs deposits then the user will lose control of the land and their 
+interest will go to their neighbors based on the neighbors damage score.
+
+attackPower = armyPoints * 70 
+defensePower = defensePoints * 70 
+
+ ******************** */
+
+contract LandLord is Initializable, ReentrancyGuard {
+    using SafeERC20 for IERC20;
+
+    // =========================
+    // CONFIG
+    // =========================
+
+    //uint256 public splitArmy; // % of yield to army (0–100)
+
+    address public lord;
+    address public reserve;
+    address public generatorPool;
+    address public wethGatewayAddr;
+
+    // =========================
+    // FINANCIAL STATE
+    // =========================
+
+    uint256 public totalDeposits;     // principal deposited
+    uint256 public claimedYield;      // yield already converted to resources
+    uint256 public toCentralPool;   // pending transfer to central pool (from battle losses)
+    uint256 public resources;
+
+    // =========================
+    // GAME STATE
+    // =========================
+
+    uint256 public army;
+    uint256 public food;
+
+    bool public ownershipUnlocked;
+
+    mapping(address  => uint256) public neighborDamage;
+
+    // =========================
+    // MODIFIERS
+    // =========================
+
+    modifier onlyReserve() {
+        require(msg.sender == reserve, "Not reserve");
+        _;
+    }
+
+    // =========================
+    // INITIALIZE (CLONE SAFE)
+    // =========================
+
     function initialize(
         address _lord,
+        address _reserve,
         address _wethGatewayAddr,
         uint256 _splitArmy,
-        address _generatorPool,
-        address _map
-    ) external;
-}
-
-contract LandLordFactory is WorldGraph {
-
-    using Clones for address;
-
-    // -----------------------------------------------------------------------
-    // State
-    // -----------------------------------------------------------------------
-
-    address public immutable baseLandLord;   // implementation contract to clone
-    address public immutable wethGatewayAddr;
-    address public immutable generatorPool;
-
-    mapping(address => address) public lordToClone;  // player => their LandLord clone
-    mapping(address => bool)    public isClone;
-
-    address[] public allClones;
-
-    // -----------------------------------------------------------------------
-    // Events
-    // -----------------------------------------------------------------------
-
-    event LandLordCreated(
-        address indexed lord,
-        address indexed clone,
-        uint256 deposit,
-        uint256 neighborCount
-    );
-
-    // -----------------------------------------------------------------------
-    // Constructor
-    // -----------------------------------------------------------------------
-
-    constructor(
-        address _baseLandLord,
-        address _wethGatewayAddr,
         address _generatorPool
-    ) {
-        require(_baseLandLord   != address(0), "invalid base");
-        require(_wethGatewayAddr != address(0), "invalid weth gateway");
-        require(_generatorPool  != address(0), "invalid generator pool");
+    ) external initializer {
+        require(_splitArmy <= 100, "Invalid split");
 
-        baseLandLord    = _baseLandLord;
+        lord = _lord;
+        reserve = _reserve;
         wethGatewayAddr = _wethGatewayAddr;
-        generatorPool   = _generatorPool;
+        generatorPool = _generatorPool;
+
+        splitArmy = _splitArmy;
+        ownershipUnlocked = false;
     }
 
-    // -----------------------------------------------------------------------
-    // Clone creation
-    // -----------------------------------------------------------------------
+    // =========================
+    // CORE: HARVEST YIELD → RESOURCES
+    // =========================
 
-    /// @param _splitArmy   Army split percentage (1–99)
-    ///                     Pass address(0) only for the very first player.
-    function createLandLord(uint256 _splitArmy) external payable {
-        require(msg.value >= MIN_DEPOSIT,           "Deposit too small");
-        require(lordToClone[msg.sender] == address(0), "Already has a LandLord");
-        require(_splitArmy > 0 && _splitArmy < 100, "Split must be between 1 and 99");
+    function _harvest() internal {
+        uint256 aTokenBalance = getATokenBalance();
 
-        // 1. Register the player in the graph (handles anchor + neighbor seeding)
-        _registerPlayer(msg.sender, msg.value);
+        if (aTokenBalance <= totalDeposits) return;
 
-        // 2. Deploy the clone
-        address clone = baseLandLord.clone();
+        uint256 totalEarned = aTokenBalance - totalDeposits;
+        uint256 unclaimed = totalEarned - claimedYield;
+        claimedYield += unclaimed;
 
-        // 3. Initialize it — factory passes itself as _map
-        ILandLord(clone).initialize(
-            msg.sender,
-            wethGatewayAddr,
-            _splitArmy,
-            generatorPool,
-            address(this)      // factory IS the map
+        //if (unclaimed == 0) return;
+
+        //uint256 armyShare = (unclaimed * splitArmy) / 100;
+        //uint256 foodShare = unclaimed - armyShare;
+
+        //army += armyShare;
+        //food += foodShare;
+
+        //claimedYield += unclaimed;
+    }
+
+    function buyResources(uint256 armyAmount, uint256 foodAmount) external onlyReserve {
+        require(armyAmount + foodAmount <= claimedYield, "Not enough yield");
+
+        army += armyAmount;
+        food += foodAmount;
+        claimedYield -= (armyAmount + foodAmount);
+    }
+
+    // =========================
+    // DEPOSIT
+    // =========================
+
+    function addFunds(uint256 splitCentral)
+        external
+        payable
+        onlyReserve
+        nonReentrant
+    {
+        require(splitCentral <= 100, "Invalid split");
+
+        uint256 centralDeposit = (msg.value * splitCentral) / 100;
+        uint256 landDeposit = msg.value - centralDeposit;
+
+        totalDeposits += landDeposit;
+
+        address pool = IPremiumGenerator(generatorPool)
+            .getLendingPoolAddress();
+
+        // deposit to this contract
+        IWETHGateway(wethGatewayAddr).depositETH{value: landDeposit}(
+            pool,
+            address(this),
+            0
         );
 
-        // 4. Forward the deposit to the clone which deposits into AAVE
-        ILandLord(clone).addFunds{value: msg.value}();
-
-        // 5. Record
-        lordToClone[msg.sender] = clone;
-        isClone[clone]          = true;
-        allClones.push(clone);
-
-        emit LandLordCreated(msg.sender, clone, msg.value, neighborCount(msg.sender));
+        // deposit to reserve (central pool)
+        if (centralDeposit > 0) {
+            IWETHGateway(wethGatewayAddr).depositETH{value: centralDeposit}(
+                pool,
+                reserve,
+                0
+            );
+        }
     }
 
-    fuunction addFundsToClone() external payable {
-        require(msg.value >= MIN_DEPOSIT,           "Deposit too small");
-        address clone = lordToClone[msg.sender];
-        require(clone != address(0), "Player has no land");
+    // =========================
+    // WITHDRAW PRINCIPAL
+    // =========================
 
-        ILandLord(clone).addFunds{value: msg.value}();
+    function withdrawPrincipal() external onlyReserve nonReentrant {
+        _harvest();
+
+        address aToken = IPremiumGenerator(generatorPool)
+            .getATokenAddress();
+
+        address pool = IPremiumGenerator(generatorPool)
+            .getLendingPoolAddress();
+
+        IERC20(aToken).safeApprove(wethGatewayAddr, 0);
+        IERC20(aToken).safeApprove(wethGatewayAddr, totalDeposits);
+
+        IWETHGateway(wethGatewayAddr).withdrawETH(
+            pool,
+            totalDeposits,
+            lord
+        );
+
+        totalDeposits = 0;
+        ownershipUnlocked = true;
     }
 
-    function _removePlayer(address player) internal override {
-        super._removePlayer(player);
-        lordToClone[player] = address(0);
+    // =========================
+    // BATTLE LOSS (RESOURCE LEVEL)
+    // =========================
+
+    function applyBattleLoss(
+        //uint256 percentLoss,
+        //uint256 percentToCentral, 
+        //address winner
+        uint256 loss   
+    ) external onlyReserve {
+        //require(percentLoss <= 100, "Invalid loss");
+        //require(percentToCentral <= 100, "Invalid central");
+
+        //_harvest();
+
+        //uint256 loss = (army * percentLoss) / 100;
+        if (loss == 0) return;
+
+        army -= loss;
+
+        //toCentralPool += (loss * percentToCentral) / 100;
+        //uint256 toWinner = loss - toCentral;
+
+        /*address [] memory neighbors = getNeighbors();
+        require(neighbors.length > 0, "No neighbors");
+        require(_isNeighbor(winner), "Winner not neighbor");
+        for(uint256 i = 0; i < neighbors.length; i++) {
+            if(neighbors[i] == winner){
+                // transfer to winner
+                // IReserve(reserve).rewardWinner(toWinner);
+                neighborDamage[winner] += toWinner;
+            } 
+        }*/
+
+        // NOTE:
+        // We are NOT transferring aTokens anymore.
+        // These are virtual resources.
+        // Reserve contract should track central pool.
+        // Winner allocation handled externally.
+
+        // Example hooks:
+        // IReserve(reserve).addToCentralPool(toCentral);
+        // IReserve(reserve).rewardWinner(toWinner);
     }
 
-    // -----------------------------------------------------------------------
-    // Views
-    // -----------------------------------------------------------------------
+    // =========================
+    // OWNERSHIP TRANSFER
+    // =========================
 
-    function allClonesLength() external view returns (uint256) {
-        return allClones.length;
+    function assignNewLord(address _newLord) external onlyReserve {
+        require(ownershipUnlocked, "Still occupied");
+
+        lord = _newLord;
+        ownershipUnlocked = false;
+
+        // reset game state if desired
+        army = 0;
+        food = 0;
+        claimedYield = 0;
     }
 
-    function getClone(address lord) external view returns (address) {
-        return lordToClone[lord];
+    // =========================
+    // VIEWS
+    // =========================
+
+    function getResources()
+        external
+        view
+        returns (
+            uint256 _army,
+            uint256 _food,
+            uint256 _principal
+        )
+    {
+        return (army, food, totalDeposits);
+    }
+
+    function previewHarvest()
+        external
+        view
+        returns (uint256 armyOut, uint256 foodOut)
+    {
+        uint256 aTokenBalance = getATokenBalance();
+
+        if (aTokenBalance <= totalDeposits) return (0, 0);
+
+        uint256 totalEarned = aTokenBalance - totalDeposits;
+        uint256 unclaimed = totalEarned - claimedYield;
+
+        armyOut = (unclaimed * splitArmy) / 100;
+        foodOut = unclaimed - armyOut;
+    }
+
+    function getATokenBalance() public view returns (uint256) {
+        address aToken = IPremiumGenerator(generatorPool)
+            .getATokenAddress();
+
+        return IERC20(aToken).balanceOf(address(this));
+    }
+
+    function getNeighbors() public view returns (address[] memory) {
+        return IMapGraph(reserve).getNeighbors(address(this));
+    }
+
+    function _isNeighbor(address _addr) internal view returns (bool) {
+        return IMapGraph(reserve).isNeighbor(address(this), _addr);
     }
 }
