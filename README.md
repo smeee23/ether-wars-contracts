@@ -1,72 +1,119 @@
-# Ethereum Slashing Insurance (SLI) Protocol
+# Ether Wars Contracts
 
-This repository contains the smart contract code and front-end React dapp for Ethereum Slashing Insurance protocol SLI (v1). The app uses Truffle as a development environment for testing and deployment tasks.
+Smart contracts for an onchain tournament strategy game. Players enter a tournament with equal ETH deposits, are grouped into table/island-style groups of up to 9 players, and play commit/reveal battle rounds using virtual game resources.
 
-This project is part of the Chainlink 2023 Spring Hackathon. Our goal is to deploy a Proof of Concept on the Matic Mumbai network. Our project uses AWS to host the API and Chainlink Functions to make the data available to our contracts.
+## Project Overview
 
-# What is Ethereum Staking?
+The current architecture is tournament-based, not a persistent world or insurance protocol. ETH principal and yield/profit are handled at the tournament layer through a generic yield adapter. Gameplay state is virtual: gold, food, water, population, and army are tracked in contracts and are not ERC20/aToken balances.
 
-Ethereum staking is the process of participating in the Ethereum network by depositing and holding a specified amount of ETH as a stake. Validators, also known as stakers, are responsible for creating and validating new blocks and securing the network by ensuring consensus on the validity of transactions. To become a validator, one must lock up a minimum of 32 ETH in a specialized smart contract called the Beacon Chain.
+## Current Architecture
 
-# What is Slashing?
+```text
+Players
+  -> TournamentManager
+       -> IYieldAdapter
+            -> NoYieldAdapter now
+            -> future Aave/stETH/wstETH adapter later
+       -> LandLord clones
+       -> BattleManager
+            -> commit/reveal actions
+            -> battle resolution callbacks
+       -> ChainlinkVRFProvider
+            -> Chainlink VRF coordinator
 
-By staking ETH, validators contribute to the security and decentralization of the network. In return, they receive rewards in the form of additional ETH.
-
-Slashing is a penalty mechanism designed to discourage malicious behavior and ensure the integrity of the Ethereum network. If a validator is found to have violated the network's rules, their staked ETH can be partially or fully slashed, meaning a portion of their funds is forfeited.
-
-# What Actions Trigger Slashing?
-
-There are several actions that can trigger slashing, including double-signing (signing conflicting blocks), surrounding violations, and non-participation in the consensus process. Double-signing occurs when a validator attempts to create or attest to multiple blocks at the same time, which undermines the security and consistency of the blockchain. Surrounding violations involve validators intentionally surrounding a block or group of blocks to manipulate the consensus process.
-
-Ideally, validators who maintain a proper setup and do not engage in malicious behavior should not have to be concerned about facing slashing penalties. However, in practice, a notable number of honest validators have experienced slashing incidents (outnumbering those who intentionally engage in malicious activities). This can be attributed to various factors, including human error, software bugs, and the effectiveness and security of backup systems. The slashing of well-intentioned validators, highlights the need for continuous vigilance and thorough preparations to ensure the security of staked assets.
-
-# SLI Protocol
-
-SLI leverages the power of decentralized finance (DeFi) to allow validators to protect themselves from the losses associated with slashing penalties at no cost to themselves.
-
-To qualify for insurance, validators deposit ETH into the SLI PremiumGenerator Contracts, which, in turn, deposit the ETH into the Aave lending protocol. The Aave lending protocol generates a passive rate of interest on the deposited assets by lending them out in the form of collateralized loans. The interest earned is used to cover losses for any slashing penalties for members.
-
-When validators choose to withdraw their staked ETH from the network, they can terminate their insurance benefit by withdrawing their deposit. The validator's deposit is returned in full.
-
-# Where Does the Interest Come From?
-
-Aave can be thought of as an automated system of liquidity pools. Users deposit tokens they want to lend out, which are amassed into reserve pools. Borrowers may then draw from these pools by taking out collateralized loans. In exchange for providing liquidity to the market lenders earn a passive rate of interest on their deposits.
-
-With lending protocols like Aave risk exists because the financial value behind the collateral and borrowed debt can fluctuate significantly due to the volatility of crypto markets. To mitigate this risk, Aave requires loans to be overcollateralized, meaning the collateral is always worth more than the debt being borrowed. To maintain solvency, positions nearing under collateralization are liquidated (collateral is sold to pay back the debt), protecting lenders and keeping all positions over 100% collateralized.
-
-# Learn More
-
-The easiest way to familiarize yourself with SLI is through our [dapp](https://royal-wave-9150.on.fleek.co/#/) hosted on IPFS (InterPlanetary File System). Connect your wallet and start experimenting with our proof of concept Dapp running on the Matic Mumbai testnet.
-
-# Setup
-
-The app uses Truffle as a development environment for testing and deployment tasks. Truffle requires updated versions of node and npm to function correctly. To check the versions enter command:
-
-```
-truffle --version
-
-npm --version
-
-node --version
-```
-(Installation: [Downloading and installing Node.js and npm](https://docs.npmjs.com/downloading-and-installing-node-js-and-npm) and [Truffle Suite)](https://trufflesuite.com/docs/truffle/getting-started/installation/)
-
-
-To run locally clone this repository with command:
-
-```
-git clone https://github.com/smeee23/sli/tree/master
+WorldGraph
+  -> experimental future feature, not core to current table model
 ```
 
-To install dependencies, from the client directory enter the command:
+## Main Contracts
 
-```
+- `contracts/LandLordFactory.sol`
+  - Defines `TournamentManager`.
+  - Handles equal entry deposits, player registration, table assignment, round transitions, principal/yield accounting, LandLord clone creation, battle settlement hooks, and VRF handoff.
+
+- `contracts/BattleManager.sol`
+  - Handles commit/reveal rounds.
+  - Current actions are `ATTACK`, `DEFEND`, and `BUILD`.
+  - Enforces one attack per player per round and keeps only the highest-wager attack per defender.
+
+- `contracts/LandLord.sol`
+  - Per-player virtual city/resource state.
+  - Tracks gold, food, water, population, army, buildings, derived attack/defense stats, build actions, decay, and gold transfers.
+  - Does not hold ETH, aTokens, or yield assets.
+
+- `contracts/interfaces/protocol/IYieldAdapter.sol`
+  - Generic ETH yield adapter interface used by the tournament layer.
+
+- `contracts/NoYieldAdapter.sol`
+  - Minimal adapter that accepts ETH and returns 1:1 shares without generating yield.
+
+- `contracts/ChainlinkVRFProvider.sol`
+  - Thin VRF adapter. TournamentManager requests randomness and forwards approved randomness to BattleManager.
+
+- `contracts/WorldGraph.sol`
+  - Experimental future graph/map prototype. It is preserved for reference but is not part of the active table-based tournament flow.
+
+## Tournament Flow
+
+1. Admin deploys/configures `TournamentManager`, `LandLord` implementation, yield adapter, `BattleManager`, and VRF provider.
+2. Players register with the same ETH entry deposit.
+3. TournamentManager deposits ETH into the configured `IYieldAdapter`.
+4. TournamentManager creates a `LandLord` clone for each player and assigns starting virtual resources.
+5. Players are assigned to tables with a max size of 9.
+6. Each round snapshots table membership, requests randomness, runs commit/reveal, resolves battles, applies decay, and rebalances tables between rounds.
+7. At tournament end, participant principal can be claimed. Yield/profit above principal can be awarded to the winner.
+
+## Commit/Reveal Battle Flow
+
+Players first commit a hash, then reveal their action during the reveal phase. The commit hash includes tournament id, round id, player, action type, target, wager, salt, chain id, and BattleManager address.
+
+Actions:
+
+- `ATTACK`: targets an active player at the same frozen round table and includes a positive gold wager.
+- `DEFEND`: default action if a player does not reveal; no wager.
+- `BUILD`: no wager; improves non-gold resources through LandLord.
+
+If multiple players attack the same defender in one round, only the highest gold wager is eligible to resolve. Ties use available randomness when possible, with deterministic fallback logic.
+
+## Resource Model
+
+Gold is the main tournament survival currency and the only attack wager. Food, water, population, and army are virtual game resources used for build/decay/stat mechanics.
+
+LandLord owns gameplay accounting only. ETH principal, yield, and adapter shares stay in TournamentManager/yield adapter logic.
+
+## Yield Adapter Model
+
+TournamentManager depends on `IYieldAdapter`, not directly on Aave, stETH, wstETH, or any specific yield source.
+
+Current adapter:
+
+- `NoYieldAdapter`: holds ETH without yield and reports ETH balance as total assets.
+
+Future adapters can implement the same interface for Aave, stETH, wstETH, or another yield source without moving financial logic into LandLord or BattleManager.
+
+## Contracts Kept For Future/Legacy Reference
+
+The repo still contains older SLI/insurance, reserve, premium generator, Aave, oracle, mock, and map contracts. These compile but are not the active game architecture unless explicitly wired through the current tournament model.
+
+Notably:
+
+- `WorldGraph.sol` is kept as an experimental future feature.
+- Premium/Aave contracts may be useful as references for a future `IYieldAdapter` implementation.
+- Reserve, validator insurance, beneficiary, and Chainlink Functions oracle contracts are legacy SLI architecture.
+
+## Development Notes / TODOs
+
+- Rename `LandLordFactory.sol` to match its current `TournamentManager` contract.
+- Extract local manager/provider interfaces into dedicated interface files.
+- Add tests for registration, table snapshots, commit/reveal, battle settlement, rebalancing, principal claims, and yield claims.
+- Replace `NoYieldAdapter` with a real audited adapter only after choosing the final yield source.
+- Review gas limits for full-table rebalancing and per-round decay loops before large tournaments.
+- Audit access control, settlement accounting, and randomness assumptions before deployment.
+
+## Commands
+
+```bash
 npm install
+npm run compile
+npm test
 ```
-
-After installing dependencies, to start a local instance of the dapp enter the command from the client directory:
-
-```
-npm start
-```
-
