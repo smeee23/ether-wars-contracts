@@ -4,6 +4,25 @@ pragma solidity 0.8.20;
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 
+interface IBattleTournamentManager {
+    function isValidAttackForRound(
+        uint256 tournamentId,
+        uint256 roundId,
+        address attacker,
+        address target,
+        uint256 wager
+    ) external view returns (bool);
+
+    function settleBattle(
+        address attacker,
+        address defender,
+        uint256 wager,
+        bool attackerWon
+    ) external returns (uint256 transferred);
+
+    function applyBuildAction(address player) external;
+}
+
 /**
  * @title BattleManager
  * @notice Commit–reveal battle system with time-windowed rounds
@@ -37,7 +56,7 @@ contract BattleManager is ReentrancyGuard {
         NONE,
         ATTACK,
         DEFEND,
-        REINFORCE
+        BUILD
     }
 
     // =========================
@@ -47,7 +66,13 @@ contract BattleManager is ReentrancyGuard {
     struct Action {
         ActionType actionType;
         address target;
-        uint256 amount;
+        uint256 amount; // gold wager for ATTACK; must be zero otherwise
+    }
+
+    struct BestAttack {
+        address attacker;
+        uint256 wager;
+        bool resolved;
     }
 
     struct Round {
@@ -62,6 +87,8 @@ contract BattleManager is ReentrancyGuard {
     // =========================
 
     uint256 public currentRound;
+    address public immutable tournamentManager;
+    uint256 public immutable tournamentId;
 
     mapping(uint256 => Round) public rounds;
 
@@ -73,6 +100,8 @@ contract BattleManager is ReentrancyGuard {
 
     // track if revealed
     mapping(uint256 => mapping(address => bool)) public hasRevealed;
+    mapping(uint256 => mapping(address => bool)) public hasAttacked;
+    mapping(uint256 => mapping(address => BestAttack)) public bestAttackByDefender;
 
     // =========================
     // EVENTS
@@ -81,7 +110,30 @@ contract BattleManager is ReentrancyGuard {
     event RoundStarted(uint256 roundId);
     event Committed(address indexed user, uint256 roundId);
     event Revealed(address indexed user, uint256 roundId);
-    event BattleResolved(address attacker, address defender, bool attackerWon);
+    event AttackRevealed(
+        uint256 indexed roundId,
+        address indexed attacker,
+        address indexed defender,
+        uint256 wager
+    );
+    event AttackOutbid(
+        uint256 indexed roundId,
+        address indexed defender,
+        address indexed outbidAttacker,
+        address newLeader,
+        uint256 outbidWager,
+        uint256 newLeaderWager
+    );
+    event BattleResolved(
+        uint256 indexed roundId,
+        address indexed attacker,
+        address indexed defender,
+        bool attackerWon,
+        uint256 attackerWager,
+        uint256 attackerWinChance,
+        uint256 goldTransferred
+    );
+    event RoundRandomnessSet(uint256 indexed roundId, uint256 randomness);
 
     // =========================
     // MODIFIERS
@@ -92,11 +144,26 @@ contract BattleManager is ReentrancyGuard {
         _;
     }
 
+    modifier onlyTournamentManager() {
+        require(msg.sender == tournamentManager, "not tournament manager");
+        _;
+    }
+
+    constructor(address _tournamentManager, uint256 _tournamentId) {
+        require(_tournamentManager != address(0), "invalid tournament manager");
+        tournamentManager = _tournamentManager;
+        tournamentId = _tournamentId;
+    }
+
     // =========================
     // ROUND CONTROL
     // =========================
 
-    function startNextRound() external {
+    function startNextRound()
+        external
+        onlyTournamentManager
+        returns (uint256 roundId)
+    {
         currentRound++;
 
         rounds[currentRound] = Round({
@@ -107,6 +174,7 @@ contract BattleManager is ReentrancyGuard {
         });
 
         emit RoundStarted(currentRound);
+        return currentRound;
     }
 
     function getPhase() public view returns (Phase) {
@@ -119,6 +187,14 @@ contract BattleManager is ReentrancyGuard {
         } else {
             return Phase.Resolve;
         }
+    }
+
+    function canEndRound() external view returns (bool) {
+        return currentRound != 0 && getPhase() == Phase.Resolve;
+    }
+
+    function getRoundRandomness(uint256 roundId) external view returns (uint256) {
+        return rounds[roundId].randomness;
     }
 
     // =========================
@@ -147,28 +223,27 @@ contract BattleManager is ReentrancyGuard {
         external
         inPhase(Phase.Reveal)
     {
-        bytes32 expected = keccak256(
-            abi.encode(action.actionType, action.target, action.amount, salt, currentRound)
+        bytes32 expected = computeCommitHash(
+            msg.sender,
+            action.actionType,
+            action.target,
+            action.amount,
+            salt,
+            currentRound
         );
 
         require(expected == commits[currentRound][msg.sender], "invalid reveal");
-        require(!hasRevealed[currentRound][msg.sender], "already revealed");
-
-        revealed[currentRound][msg.sender] = action;
-        hasRevealed[currentRound][msg.sender] = true;
-
-        emit Revealed(msg.sender, currentRound);
+        _recordReveal(msg.sender, action);
     }
 
     function _processReveal(RevealData calldata r) internal {
-        bytes32 expected = keccak256(
-            abi.encode(
-                r.action.actionType,
-                r.action.target,
-                r.action.amount,
-                r.salt,
-                currentRound
-            )
+        bytes32 expected = computeCommitHash(
+            r.player,
+            r.action.actionType,
+            r.action.target,
+            r.action.amount,
+            r.salt,
+            currentRound
         );
 
         address signer = ECDSA.recover(
@@ -179,12 +254,7 @@ contract BattleManager is ReentrancyGuard {
         require(signer == r.player, "bad sig");
 
         require(expected == commits[currentRound][signer], "invalid reveal");
-        require(!hasRevealed[currentRound][signer], "already revealed");
-
-        revealed[currentRound][signer] = r.action;
-        hasRevealed[currentRound][signer] = true;
-
-        emit Revealed(signer, currentRound);
+        _recordReveal(signer, r.action);
     }
 
     function batchReveal(RevealData[] calldata reveals)
@@ -196,45 +266,188 @@ contract BattleManager is ReentrancyGuard {
         }
     }
 
+    function setRoundRandomness(uint256 roundId, uint256 randomness)
+        external
+        onlyTournamentManager
+    {
+        require(roundId != 0 && roundId <= currentRound, "invalid round");
+        require(randomness != 0, "invalid randomness");
+        require(rounds[roundId].randomness == 0, "randomness already set");
+
+        rounds[roundId].randomness = randomness;
+        emit RoundRandomnessSet(roundId, randomness);
+    }
+
     // =========================
     // RESOLVE (LAZY)
     // =========================
 
     function resolveBattle(address attacker, address defender)
         external
+        onlyTournamentManager
         inPhase(Phase.Resolve)
         nonReentrant
     {
         Action memory atk = _getActionOrDefault(attacker);
-        Action memory def = _getActionOrDefault(defender);
+        BestAttack storage best = bestAttackByDefender[currentRound][defender];
 
         require(atk.actionType == ActionType.ATTACK, "attacker not attacking");
         require(atk.target == defender, "wrong target");
+        require(best.attacker == attacker, "attacker was outbid");
+        require(!best.resolved, "battle already resolved");
 
-        // simple power calc (replace with your LandLord reads)
-        uint256 attackPower = atk.amount;
-        uint256 defensePower = def.amount;
-
-        // randomness fallback (pseudo if VRF not used)
+        uint256 randomness = rounds[currentRound].randomness;
+        require(randomness != 0, "randomness not set");
         uint256 rand = uint256(
             keccak256(
-                abi.encode(block.timestamp, attacker, defender)
+                abi.encode(randomness, attacker, defender, currentRound)
             )
         ) % 100;
 
-        bool attackerWon = (attackPower * (100 + rand)) >
-            (defensePower * (100 + (100 - rand)));
+        uint256 winChance = _attackerWinChance(attacker, defender);
 
-        // TODO: call LandLord / GridManager hooks here
-        // e.g.
-        // IGridManager.applyBattle(attacker, defender, attackerWon);
+        bool attackerWon = rand < winChance;
 
-        emit BattleResolved(attacker, defender, attackerWon);
+        best.resolved = true;
+        uint256 transferred = IBattleTournamentManager(tournamentManager)
+            .settleBattle(attacker, defender, atk.amount, attackerWon);
+
+        emit BattleResolved(
+            currentRound,
+            attacker,
+            defender,
+            attackerWon,
+            atk.amount,
+            winChance,
+            transferred
+        );
     }
 
     // =========================
     // INTERNAL HELPERS
     // =========================
+
+    function _recordReveal(address player, Action calldata action) internal {
+        require(!hasRevealed[currentRound][player], "already revealed");
+
+        if (action.actionType == ActionType.ATTACK) {
+            _recordAttackReveal(player, action);
+        } else if (action.actionType == ActionType.BUILD) {
+            require(action.target == address(0), "build target");
+            require(action.amount == 0, "build wager");
+            IBattleTournamentManager(tournamentManager).applyBuildAction(player);
+        } else {
+            require(action.target == address(0), "build target");
+            require(action.amount == 0, "non-attack wager");
+        }
+
+        revealed[currentRound][player] = action;
+        hasRevealed[currentRound][player] = true;
+
+        emit Revealed(player, currentRound);
+    }
+
+    function _attackerWinChance(address, address defender)
+        internal
+        view
+        returns (uint256)
+    {
+        Action memory defenderAction = _getActionOrDefault(defender);
+
+        if (defenderAction.actionType == ActionType.BUILD) return 65;
+        if (defenderAction.actionType == ActionType.DEFEND) return 35;
+        if (defenderAction.actionType == ActionType.ATTACK) return 50;
+
+        return 35;
+    }
+
+    function _recordAttackReveal(address attacker, Action calldata action)
+        internal
+    {
+        require(!hasAttacked[currentRound][attacker], "already attacked");
+        require(
+            IBattleTournamentManager(tournamentManager).isValidAttackForRound(
+                tournamentId,
+                currentRound,
+                attacker,
+                action.target,
+                action.amount
+            ),
+            "invalid attack"
+        );
+
+        hasAttacked[currentRound][attacker] = true;
+        emit AttackRevealed(
+            currentRound,
+            attacker,
+            action.target,
+            action.amount
+        );
+
+        BestAttack storage currentBest = bestAttackByDefender[currentRound][
+            action.target
+        ];
+
+        if (currentBest.attacker == address(0)) {
+            currentBest.attacker = attacker;
+            currentBest.wager = action.amount;
+            return;
+        }
+
+        if (
+            action.amount > currentBest.wager ||
+            (
+                action.amount == currentBest.wager &&
+                _winsTie(attacker, currentBest.attacker, action.target)
+            )
+        ) {
+            address outbidAttacker = currentBest.attacker;
+            uint256 outbidWager = currentBest.wager;
+
+            currentBest.attacker = attacker;
+            currentBest.wager = action.amount;
+
+            emit AttackOutbid(
+                currentRound,
+                action.target,
+                outbidAttacker,
+                attacker,
+                outbidWager,
+                action.amount
+            );
+        } else {
+            emit AttackOutbid(
+                currentRound,
+                action.target,
+                attacker,
+                currentBest.attacker,
+                action.amount,
+                currentBest.wager
+            );
+        }
+    }
+
+    function _winsTie(
+        address challenger,
+        address incumbent,
+        address defender
+    ) internal view returns (bool) {
+        uint256 randomness = rounds[currentRound].randomness;
+        bytes32 tieSeed;
+
+        if (randomness != 0) {
+            tieSeed = keccak256(
+                abi.encode(randomness, currentRound, challenger, incumbent, defender)
+            );
+        } else {
+            // Fallback is deterministic if VRF has not arrived by reveal time.
+            tieSeed = keccak256(
+                abi.encode(currentRound, challenger, incumbent, defender)
+            );
+        }
+
+        return uint256(tieSeed) % 2 == 1;
+    }
 
     function _getActionOrDefault(address user)
         internal
@@ -258,14 +471,25 @@ contract BattleManager is ReentrancyGuard {
     // =========================
 
     function computeCommitHash(
+        address player,
         ActionType actionType,
         address target,
-        uint256 amount,
+        uint256 wager,
         bytes32 salt,
         uint256 roundId
-    ) external pure returns (bytes32) {
+    ) public view returns (bytes32) {
         return keccak256(
-            abi.encode(actionType, target, amount, salt, roundId)
+            abi.encode(
+                tournamentId,
+                roundId,
+                player,
+                actionType,
+                target,
+                wager,
+                salt,
+                block.chainid,
+                address(this)
+            )
         );
     }
 }

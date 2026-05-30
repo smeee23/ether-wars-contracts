@@ -45,22 +45,41 @@ contract PremiumGeneratorAaveV3 is ReentrancyGuard, PremiumGeneratorCore {
     }
 
     /**
-     * @dev Allows a user to deposit funds for a specific validator index.
-     * @param _validatorIndex The index of the validator.
+     * @dev Legacy-compatible deposit entrypoint. The index is ignored by the
+     * neutral tournament adapter.
+     * @param _validatorIndex Ignored legacy validator index.
      */
     function deposit(uint _validatorIndex) nonReentrant external payable{
+        _validatorIndex;
         address poolAddr = getLendingPoolAddress();
-        _deposit(poolAddr, _validatorIndex);
+        _deposit(poolAddr, msg.sender);
+    }
+
+    function depositFor(address owner) external payable nonReentrant {
+        address poolAddr = getLendingPoolAddress();
+        _deposit(poolAddr, owner);
     }
 
     /**
-     * @dev Allows a user to withdraw funds for a specific validator index.
-     * @param _validatorIndex The index of the validator.
+     * @dev Legacy-compatible withdraw entrypoint. The index is ignored by the
+     * neutral tournament adapter.
+     * @param _validatorIndex Ignored legacy validator index.
      */
     function withdraw(uint _validatorIndex) external nonReentrant {
+        _validatorIndex;
         address aTokenAddress = getATokenAddress();
         address poolAddr = getLendingPoolAddress();
-        _withdraw(poolAddr, aTokenAddress, _validatorIndex);
+        _withdraw(poolAddr, aTokenAddress, msg.sender, premiumDeposit, msg.sender);
+    }
+
+    function withdrawPrincipal(
+        address owner,
+        uint256 amount,
+        address to
+    ) external onlyController nonReentrant {
+        address aTokenAddress = getATokenAddress();
+        address poolAddr = getLendingPoolAddress();
+        _withdraw(poolAddr, aTokenAddress, owner, amount, to);
     }
 
     /**
@@ -70,7 +89,12 @@ contract PremiumGeneratorAaveV3 is ReentrancyGuard, PremiumGeneratorCore {
      */
     function withdrawInterest()external onlyReserve returns(uint256){
         address aTokenAddress = getATokenAddress();
-        return _withdrawInterest(aTokenAddress);
+        return _withdrawInterest(aTokenAddress, controller);
+    }
+
+    function withdrawInterestTo(address to) external onlyController returns(uint256){
+        address aTokenAddress = getATokenAddress();
+        return _withdrawInterest(aTokenAddress, to);
     }
 
 

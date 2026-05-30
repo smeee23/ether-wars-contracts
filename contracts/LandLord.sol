@@ -1,249 +1,349 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.20;
 
-import { IERC20 } from "./interfaces/other/IERC20.sol";
-import { IWETHGateway } from "./interfaces/aave/IWETHGateway.sol";
-import { SafeERC20 } from "./libraries/SafeERC20.sol";
 import "@openzeppelin/contracts/proxy/utils/Initializable.sol";
-import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
-import { IPremiumGenerator } from "./interfaces/protocol/IPremiumGenerator.sol";
-import {IWorldGraph} from "./interfaces/protocol/IWorldGraph.sol";
 
-contract LandLord is Initializable, ReentrancyGuard {
-    using SafeERC20 for IERC20;
+/**
+ * @title LandLord
+ * @notice Tournament city/resource state for one player.
+ * @dev This contract intentionally has no Aave, ETH, aToken, or vault logic.
+ *      Gold and the other resources are virtual tournament accounting.
+ */
+contract LandLord is Initializable {
+    enum ResourceType {
+        Food,
+        Water,
+        Population,
+        Army
+    }
 
-    // =========================
-    // CONFIG
-    // =========================
+    enum BuildingType {
+        Farm,
+        Well,
+        Housing,
+        Wall,
+        Tower,
+        Barracks
+    }
 
-    uint256 public splitArmy; // % of yield to army (0–100)
+    struct Resources {
+        uint256 gold;
+        uint256 food;
+        uint256 water;
+        uint256 population;
+        uint256 army;
+    }
+
+    struct Buildings {
+        uint256 farms;
+        uint256 wells;
+        uint256 housing;
+        uint256 walls;
+        uint256 towers;
+        uint256 barracks;
+    }
+
+    struct CityStats {
+        uint256 population;
+        uint256 populationCapacity;
+        uint256 attackPower;
+        uint256 defensePower;
+        uint256 foodProduction;
+        uint256 waterProduction;
+    }
+
+    uint256 public constant FARM_FOOD_PRODUCTION = 8;
+    uint256 public constant WELL_WATER_PRODUCTION = 8;
+    uint256 public constant HOUSING_CAPACITY = 5;
+    uint256 public constant WALL_DEFENSE = 8;
+    uint256 public constant TOWER_DEFENSE = 12;
+    uint256 public constant BARRACK_ATTACK = 10;
+    uint256 public constant ARMY_ATTACK = 2;
+
+    uint256 public constant FOOD_DECAY = 3;
+    uint256 public constant WATER_DECAY = 3;
+    uint256 public constant POPULATION_DECAY = 1;
+    uint256 public constant ARMY_DECAY = 1;
+    uint256 public constant REPLENISH_PER_GOLD = 10;
+    uint256 public constant BUILD_FOOD_GAIN = 12;
+    uint256 public constant BUILD_WATER_GAIN = 12;
+    uint256 public constant BUILD_POPULATION_GAIN = 2;
+    uint256 public constant BUILD_ARMY_GAIN = 2;
 
     address public lord;
-    address public reserve;
-    address public generatorPool;
-    address public wethGatewayAddr;
+    address public controller;
 
-    // =========================
-    // FINANCIAL STATE
-    // =========================
+    Resources private resources;
+    Buildings private buildings;
 
-    uint256 public totalDeposits;     // principal deposited
-    uint256 public claimedYield;      // yield already converted to resources
+    event Initialized(address indexed lord, address indexed controller);
+    event BuildingBuilt(address indexed lord, BuildingType indexed building, uint256 amount);
+    event GoldSpent(uint256 amount);
+    event GoldAwarded(uint256 amount);
+    event GoldTransferred(address indexed winnerLandLord, uint256 amount);
+    event ResourceReplenished(ResourceType indexed resource, uint256 goldSpent, uint256 amountAdded);
+    event BuildActionApplied(uint256 food, uint256 water, uint256 population, uint256 army);
+    event RoundDecayApplied(
+        uint256 indexed round,
+        uint256 foodLost,
+        uint256 waterLost,
+        uint256 populationLost,
+        uint256 armyLost
+    );
+    event BattleLossApplied(uint256 armyLost, uint256 populationLost);
+    event AttackWagerSpent(uint256 amount);
+    event DefenseWagerSpent(uint256 amount);
 
-    // =========================
-    // GAME STATE
-    // =========================
-
-    uint256 public army;
-    uint256 public food;
-
-    bool public ownershipUnlocked;
-
-    // =========================
-    // MODIFIERS
-    // =========================
-
-    modifier onlyReserve() {
-        require(msg.sender == reserve, "Not reserve");
+    modifier onlyLord() {
+        require(msg.sender == lord, "not lord");
         _;
     }
 
-    // =========================
-    // INITIALIZE (CLONE SAFE)
-    // =========================
+    modifier onlyController() {
+        require(msg.sender == controller, "not controller");
+        _;
+    }
 
     function initialize(
         address _lord,
-        address _reserve,
-        address _wethGatewayAddr,
-        uint256 _splitArmy,
-        address _generatorPool
+        address _controller,
+        Resources calldata startingResources
     ) external initializer {
-        require(_splitArmy <= 100, "Invalid split");
+        require(_lord != address(0), "invalid lord");
+        require(_controller != address(0), "invalid controller");
 
         lord = _lord;
-        reserve = _reserve;
-        wethGatewayAddr = _wethGatewayAddr;
-        generatorPool = _generatorPool;
+        controller = _controller;
+        resources = startingResources;
 
-        splitArmy = _splitArmy;
-        ownershipUnlocked = false;
+        emit Initialized(_lord, _controller);
     }
 
-    // =========================
-    // CORE: HARVEST YIELD → RESOURCES
-    // =========================
+    function build(BuildingType building, uint256 amount) public onlyLord {
+        require(amount > 0, "invalid amount");
 
-    function _harvest() internal {
-        uint256 aTokenBalance = getATokenBalance();
+        uint256 cost = _buildingGoldCost(building, amount);
+        _spendGold(cost);
 
-        if (aTokenBalance <= totalDeposits) return;
+        if (building == BuildingType.Farm) buildings.farms += amount;
+        else if (building == BuildingType.Well) buildings.wells += amount;
+        else if (building == BuildingType.Housing) buildings.housing += amount;
+        else if (building == BuildingType.Wall) buildings.walls += amount;
+        else if (building == BuildingType.Tower) buildings.towers += amount;
+        else if (building == BuildingType.Barracks) buildings.barracks += amount;
 
-        uint256 totalEarned = aTokenBalance - totalDeposits;
-        uint256 unclaimed = totalEarned - claimedYield;
-
-        if (unclaimed == 0) return;
-
-        uint256 armyShare = (unclaimed * splitArmy) / 100;
-        uint256 foodShare = unclaimed - armyShare;
-
-        army += armyShare;
-        food += foodShare;
-
-        claimedYield += unclaimed;
+        emit BuildingBuilt(msg.sender, building, amount);
     }
 
-    // =========================
-    // DEPOSIT
-    // =========================
+    function buildFarm(uint256 amount) external {
+        build(BuildingType.Farm, amount);
+    }
 
-    function addFunds(uint256 splitCentral)
+    function buildWell(uint256 amount) external {
+        build(BuildingType.Well, amount);
+    }
+
+    function buildHousing(uint256 amount) external {
+        build(BuildingType.Housing, amount);
+    }
+
+    function buildWall(uint256 amount) external {
+        build(BuildingType.Wall, amount);
+    }
+
+    function buildTower(uint256 amount) external {
+        build(BuildingType.Tower, amount);
+    }
+
+    function buildBarracks(uint256 amount) external {
+        build(BuildingType.Barracks, amount);
+    }
+
+    function replenishResource(ResourceType resource, uint256 goldAmount)
         external
-        payable
-        onlyReserve
-        nonReentrant
+        onlyLord
     {
-        require(splitCentral <= 100, "Invalid split");
+        _spendGold(goldAmount);
+        uint256 replenished = goldAmount * REPLENISH_PER_GOLD;
 
-        uint256 centralDeposit = (msg.value * splitCentral) / 100;
-        uint256 landDeposit = msg.value - centralDeposit;
+        if (resource == ResourceType.Food) resources.food += replenished;
+        else if (resource == ResourceType.Water) resources.water += replenished;
+        else if (resource == ResourceType.Population) resources.population += replenished;
+        else if (resource == ResourceType.Army) resources.army += replenished;
 
-        totalDeposits += landDeposit;
+        emit ResourceReplenished(resource, goldAmount, replenished);
+    }
 
-        address pool = IPremiumGenerator(generatorPool)
-            .getLendingPoolAddress();
+    function applyRoundDecay(uint256 roundNumber) external onlyController {
+        uint256 pressure = 1 + (roundNumber / 10);
+        uint256 foodLoss = _reduceFood(FOOD_DECAY * pressure);
+        uint256 waterLoss = _reduceWater(WATER_DECAY * pressure);
+        uint256 populationLoss = _reducePopulation(POPULATION_DECAY * pressure);
+        uint256 armyLoss = _reduceArmy(ARMY_DECAY * pressure);
 
-        // deposit to this contract
-        IWETHGateway(wethGatewayAddr).depositETH{value: landDeposit}(
-            pool,
-            address(this),
-            0
+        resources.food += buildings.farms * FARM_FOOD_PRODUCTION;
+        resources.water += buildings.wells * WELL_WATER_PRODUCTION;
+
+        emit RoundDecayApplied(
+            roundNumber,
+            foodLoss,
+            waterLoss,
+            populationLoss,
+            armyLoss
         );
-
-        // deposit to reserve (central pool)
-        if (centralDeposit > 0) {
-            IWETHGateway(wethGatewayAddr).depositETH{value: centralDeposit}(
-                pool,
-                reserve,
-                0
-            );
-        }
     }
 
-    // =========================
-    // WITHDRAW PRINCIPAL
-    // =========================
+    function applyBuildAction() external onlyController {
+        resources.food += BUILD_FOOD_GAIN;
+        resources.water += BUILD_WATER_GAIN;
+        resources.population += BUILD_POPULATION_GAIN;
+        resources.army += BUILD_ARMY_GAIN;
 
-    function withdrawPrincipal() external onlyReserve nonReentrant {
-        _harvest();
-
-        address aToken = IPremiumGenerator(generatorPool)
-            .getATokenAddress();
-
-        address pool = IPremiumGenerator(generatorPool)
-            .getLendingPoolAddress();
-
-        IERC20(aToken).safeApprove(wethGatewayAddr, 0);
-        IERC20(aToken).safeApprove(wethGatewayAddr, totalDeposits);
-
-        IWETHGateway(wethGatewayAddr).withdrawETH(
-            pool,
-            totalDeposits,
-            lord
+        emit BuildActionApplied(
+            BUILD_FOOD_GAIN,
+            BUILD_WATER_GAIN,
+            BUILD_POPULATION_GAIN,
+            BUILD_ARMY_GAIN
         );
-
-        totalDeposits = 0;
-        ownershipUnlocked = true;
     }
 
-    // =========================
-    // BATTLE LOSS (RESOURCE LEVEL)
-    // =========================
-
-    function applyBattleLoss(
-        uint256 percentLoss,
-        uint256 percentToCentral
-    ) external onlyReserve {
-        require(percentLoss <= 100, "Invalid loss");
-        require(percentToCentral <= 100, "Invalid central");
-
-        _harvest();
-
-        uint256 loss = (army * percentLoss) / 100;
-        if (loss == 0) return;
-
-        army -= loss;
-
-        uint256 toCentral = (loss * percentToCentral) / 100;
-        uint256 toWinner = loss - toCentral;
-
-        // NOTE:
-        // We are NOT transferring aTokens anymore.
-        // These are virtual resources.
-        // Reserve contract should track central pool.
-        // Winner allocation handled externally.
-
-        // Example hooks:
-        // IReserve(reserve).addToCentralPool(toCentral);
-        // IReserve(reserve).rewardWinner(toWinner);
+    function applyBattleLoss(uint256 armyLoss, uint256 populationLoss)
+        external
+        onlyController
+    {
+        uint256 actualArmyLoss = _reduceArmy(armyLoss);
+        uint256 actualPopulationLoss = _reducePopulation(populationLoss);
+        emit BattleLossApplied(actualArmyLoss, actualPopulationLoss);
     }
 
-    // =========================
-    // OWNERSHIP TRANSFER
-    // =========================
-
-    function assignNewLord(address _newLord) external onlyReserve {
-        require(ownershipUnlocked, "Still occupied");
-
-        lord = _newLord;
-        ownershipUnlocked = false;
-
-        // reset game state if desired
-        army = 0;
-        food = 0;
-        claimedYield = 0;
+    function spendAttackWager(uint256 amount) external onlyController {
+        _spendGold(amount);
+        emit AttackWagerSpent(amount);
     }
 
-    // =========================
-    // VIEWS
-    // =========================
+    function spendDefenseWager(uint256 amount) external onlyController {
+        _spendGold(amount);
+        emit DefenseWagerSpent(amount);
+    }
 
-    function getResources()
+    function spendGold(uint256 amount) external onlyController {
+        _spendGold(amount);
+    }
+
+    function awardGold(uint256 amount) external onlyController {
+        resources.gold += amount;
+        emit GoldAwarded(amount);
+    }
+
+    function transferGoldToWinner(address winnerLandLord, uint256 amount)
+        external
+        onlyController
+        returns (uint256 transferred)
+    {
+        require(winnerLandLord != address(0), "invalid winner");
+
+        transferred = amount > resources.gold ? resources.gold : amount;
+        resources.gold -= transferred;
+
+        emit GoldTransferred(winnerLandLord, transferred);
+    }
+
+    function getGold() external view returns (uint256) {
+        return resources.gold;
+    }
+
+    function getResources() external view returns (Resources memory) {
+        return resources;
+    }
+
+    function getBuildings() external view returns (Buildings memory) {
+        return buildings;
+    }
+
+    function getCityStats() public view returns (CityStats memory) {
+        uint256 capacity = buildings.housing * HOUSING_CAPACITY;
+        uint256 foodProduction = buildings.farms * FARM_FOOD_PRODUCTION;
+        uint256 waterProduction = buildings.wells * WELL_WATER_PRODUCTION;
+        uint256 attackPower =
+            (buildings.barracks * BARRACK_ATTACK) +
+            (resources.army * ARMY_ATTACK);
+        uint256 defensePower =
+            (buildings.walls * WALL_DEFENSE) +
+            (buildings.towers * TOWER_DEFENSE) +
+            resources.population;
+
+        return CityStats({
+            population: resources.population,
+            populationCapacity: capacity,
+            attackPower: attackPower,
+            defensePower: defensePower,
+            foodProduction: foodProduction,
+            waterProduction: waterProduction
+        });
+    }
+
+    function getAttackPower() external view returns (uint256) {
+        return getCityStats().attackPower;
+    }
+
+    function getDefensePower() external view returns (uint256) {
+        return getCityStats().defensePower;
+    }
+
+    function canAfford(BuildingType building, uint256 amount)
         external
         view
-        returns (
-            uint256 _army,
-            uint256 _food,
-            uint256 _principal
-        )
+        returns (bool)
     {
-        return (army, food, totalDeposits);
+        return resources.gold >= _buildingGoldCost(building, amount);
     }
 
-    function previewHarvest()
-        external
-        view
-        returns (uint256 armyOut, uint256 foodOut)
+    function canAfford(uint256 goldAmount) external view returns (bool) {
+        return resources.gold >= goldAmount;
+    }
+
+    function _buildingGoldCost(BuildingType building, uint256 amount)
+        internal
+        pure
+        returns (uint256)
     {
-        uint256 aTokenBalance = getATokenBalance();
-
-        if (aTokenBalance <= totalDeposits) return (0, 0);
-
-        uint256 totalEarned = aTokenBalance - totalDeposits;
-        uint256 unclaimed = totalEarned - claimedYield;
-
-        armyOut = (unclaimed * splitArmy) / 100;
-        foodOut = unclaimed - armyOut;
+        if (building == BuildingType.Farm) return 5 * amount;
+        if (building == BuildingType.Well) return 5 * amount;
+        if (building == BuildingType.Housing) return 8 * amount;
+        if (building == BuildingType.Wall) return 10 * amount;
+        if (building == BuildingType.Tower) return 14 * amount;
+        if (building == BuildingType.Barracks) return 12 * amount;
+        return 0;
     }
 
-    function getATokenBalance() public view returns (uint256) {
-        address aToken = IPremiumGenerator(generatorPool)
-            .getATokenAddress();
-
-        return IERC20(aToken).balanceOf(address(this));
+    function _spendGold(uint256 amount) internal {
+        require(amount > 0, "invalid amount");
+        require(resources.gold >= amount, "insufficient gold");
+        resources.gold -= amount;
+        emit GoldSpent(amount);
     }
 
-    function getNeighbors() public view returns (address[] memory) {
-        return IWorldGraph(reserve).getNeighbors(address(this));
+    function _reduceFood(uint256 amount) internal returns (uint256) {
+        uint256 loss = amount > resources.food ? resources.food : amount;
+        resources.food -= loss;
+        return loss;
+    }
+
+    function _reduceWater(uint256 amount) internal returns (uint256) {
+        uint256 loss = amount > resources.water ? resources.water : amount;
+        resources.water -= loss;
+        return loss;
+    }
+
+    function _reducePopulation(uint256 amount) internal returns (uint256) {
+        uint256 loss = amount > resources.population ? resources.population : amount;
+        resources.population -= loss;
+        return loss;
+    }
+
+    function _reduceArmy(uint256 amount) internal returns (uint256) {
+        uint256 loss = amount > resources.army ? resources.army : amount;
+        resources.army -= loss;
+        return loss;
     }
 }
