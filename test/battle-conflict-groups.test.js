@@ -284,6 +284,34 @@ describe("BattleManager connected conflict groups", function () {
     expect((await bLandLord.getGold()).toString()).to.equal("80");
   });
 
+  it("keeps immediate BUILD gains and skips that round's decay", async function () {
+    const ctx = await deployGame(2);
+    const [a, b] = ctx.players;
+    const roundId = await startRound(ctx);
+
+    const bAction = build();
+    const bSalt = await commitAction(ctx, b, roundId, bAction, "b");
+
+    await revealPhase();
+    await revealAction(ctx, b, bAction, bSalt);
+    await resolvePhase();
+    await ctx.tournament.endBattleRound();
+
+    const aLandLord = await landLordOf(ctx, a);
+    const bLandLord = await landLordOf(ctx, b);
+    const aResources = await aLandLord.getResources();
+    const bResources = await bLandLord.getResources();
+
+    expect(aResources.food.toString()).to.equal("94");
+    expect(aResources.water.toString()).to.equal("94");
+    expect(aResources.shelter.toString()).to.equal("96");
+    expect(aResources.army.toString()).to.equal("38");
+    expect(bResources.food.toString()).to.equal("112");
+    expect(bResources.water.toString()).to.equal("112");
+    expect(bResources.shelter.toString()).to.equal("106");
+    expect(bResources.army.toString()).to.equal("42");
+  });
+
   it("adds army bonus to participant score", async function () {
     const ctx = await deployGame(2);
     const [a, b] = ctx.players;

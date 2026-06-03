@@ -14,6 +14,7 @@ interface ITournamentBattleManager {
     function currentRound() external view returns (uint256);
     function canEndRound() external view returns (bool);
     function getRoundRandomness(uint256 roundId) external view returns (uint256);
+    function didBuild(uint256 roundId, address player) external view returns (bool);
 }
 
 interface ITournamentVRFProvider {
@@ -682,7 +683,12 @@ contract TournamentManager is ReentrancyGuard {
             PlayerInfo memory info = playerInfo[player];
             if (!info.active || info.landLord == address(0)) continue;
 
-            bool eliminated = LandLord(info.landLord).applyRoundUpkeep(player, roundId);
+            bool skipDecay = ITournamentBattleManager(battleManager).didBuild(
+                roundId,
+                player
+            );
+            bool eliminated = LandLord(info.landLord)
+                .applyRoundUpkeepWithDecaySkip(player, roundId, skipDecay);
             if (eliminated && playerInfo[player].active) {
                 _eliminatePlayer(player);
             }

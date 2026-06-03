@@ -197,7 +197,20 @@ contract LandLord is Initializable {
         returns (bool eliminated)
     {
         require(player == lord, "wrong player");
-        eliminated = _applyRoundUpkeep(roundId);
+        eliminated = _applyRoundUpkeep(roundId, false);
+    }
+
+    function applyRoundUpkeepWithDecaySkip(
+        address player,
+        uint256 roundId,
+        bool skipDecay
+    )
+        external
+        onlyController
+        returns (bool eliminated)
+    {
+        require(player == lord, "wrong player");
+        eliminated = _applyRoundUpkeep(roundId, skipDecay);
     }
 
     function applyRoundDecay(uint256 roundNumber)
@@ -205,7 +218,7 @@ contract LandLord is Initializable {
         onlyController
         returns (bool eliminated)
     {
-        eliminated = _applyRoundUpkeep(roundNumber);
+        eliminated = _applyRoundUpkeep(roundNumber, false);
     }
 
     function applyBuildAction() external onlyController {
@@ -379,7 +392,7 @@ contract LandLord is Initializable {
         emit ResourceReplenished(resource, goldAmount, replenished);
     }
 
-    function _applyRoundUpkeep(uint256 roundId)
+    function _applyRoundUpkeep(uint256 roundId, bool skipDecay)
         internal
         returns (bool eliminated)
     {
@@ -389,10 +402,17 @@ contract LandLord is Initializable {
         resources.food += buildings.farms * FARM_FOOD_PRODUCTION;
         resources.water += buildings.wells * WELL_WATER_PRODUCTION;
 
-        uint256 foodLoss = _reduceFood(FOOD_UPKEEP * pressure);
-        uint256 waterLoss = _reduceWater(WATER_UPKEEP * pressure);
-        uint256 shelterLoss = _reduceShelter(SHELTER_UPKEEP * pressure);
-        uint256 armyLoss = _reduceArmy(ARMY_UPKEEP * pressure);
+        uint256 foodLoss;
+        uint256 waterLoss;
+        uint256 shelterLoss;
+        uint256 armyLoss;
+
+        if (!skipDecay) {
+            foodLoss = _reduceFood(FOOD_UPKEEP * pressure);
+            waterLoss = _reduceWater(WATER_UPKEEP * pressure);
+            shelterLoss = _reduceShelter(SHELTER_UPKEEP * pressure);
+            armyLoss = _reduceArmy(ARMY_UPKEEP * pressure);
+        }
 
         eliminated = isEliminatedByResources();
         emit RoundUpkeepApplied(

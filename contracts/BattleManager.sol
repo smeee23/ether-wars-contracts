@@ -261,6 +261,13 @@ contract BattleManager is ReentrancyGuard {
         return rounds[roundId].randomness;
     }
 
+    function didBuild(uint256 roundId, address player) external view returns (bool) {
+        return (
+            hasRevealed[roundId][player] &&
+            revealed[roundId][player].actionType == ActionType.BUILD
+        );
+    }
+
     // =========================
     // COMMIT
     // =========================

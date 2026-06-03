@@ -75,6 +75,30 @@ describe("LandLord resource model", function () {
     expect(await landLord.isEliminatedByResources()).to.equal(false);
   });
 
+  it("can skip round decay while preserving production", async function () {
+    const { landLord, controller, lord } = await deployLandLord({
+      gold: 1,
+      food: 20,
+      water: 20,
+      shelter: 20,
+      army: 20,
+    });
+
+    await landLord.connect(controller).applyRoundUpkeepWithDecaySkip(
+      lord.address,
+      1,
+      true
+    );
+
+    const resources = await landLord.getResources();
+    expect(resources.gold.toString()).to.equal("1");
+    expect(resources.food.toString()).to.equal("20");
+    expect(resources.water.toString()).to.equal("20");
+    expect(resources.shelter.toString()).to.equal("20");
+    expect(resources.army.toString()).to.equal("20");
+    expect(await landLord.isEliminatedByResources()).to.equal(false);
+  });
+
   it("flags elimination when any survival resource reaches zero", async function () {
     const { landLord, controller, lord } = await deployLandLord({
       gold: 1,
