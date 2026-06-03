@@ -20,7 +20,26 @@ interface IBattleTournamentManager {
         bool attackerWon
     ) external returns (uint256 transferred);
 
+    function settleConflictGroup(
+        uint256 roundId,
+        address winner,
+        address[] calldata participants,
+        uint256 groupStake
+    ) external returns (uint256 totalTransferred);
+
     function applyBuildAction(address player) external;
+
+    function getRoundTablePlayers(uint256 roundId, uint256 tableId)
+        external
+        view
+        returns (address[] memory);
+
+    function getRoundTableOf(uint256 roundId, address player)
+        external
+        view
+        returns (uint256);
+
+    function getPlayerArmy(address player) external view returns (uint256);
 }
 
 /**
@@ -34,6 +53,12 @@ contract BattleManager is ReentrancyGuard {
 
     uint256 public constant COMMIT_DURATION = 4 hours;
     uint256 public constant REVEAL_DURATION = 2 hours;
+    uint256 public constant BASE_SCORE = 100;
+    uint256 public constant RANDOM_SCORE_RANGE = 100;
+    uint256 public constant ATTACK_VS_BUILD_BONUS = 25;
+    uint256 public constant ATTACK_VS_DEFEND_PENALTY = 15;
+    uint256 public constant DEFEND_BONUS = 20;
+    uint256 public constant ARMY_SCORE_DIVISOR = 10;
 
     // =========================
     // ENUMS
@@ -82,6 +107,15 @@ contract BattleManager is ReentrancyGuard {
         uint256 randomness; // VRF result
     }
 
+    struct ConflictContext {
+        uint256 roundId;
+        uint256 tableId;
+        bytes32 groupHash;
+        address[] tablePlayers;
+        Action[] actions;
+        bool[] inGroup;
+    }
+
     // =========================
     // STATE
     // =========================
@@ -101,7 +135,10 @@ contract BattleManager is ReentrancyGuard {
     // track if revealed
     mapping(uint256 => mapping(address => bool)) public hasRevealed;
     mapping(uint256 => mapping(address => bool)) public hasAttacked;
+    // Deprecated: grouped conflict resolution keeps every valid attack instead
+    // of pruning to one highest-wager attack per defender.
     mapping(uint256 => mapping(address => BestAttack)) public bestAttackByDefender;
+    mapping(uint256 => mapping(uint256 => bool)) public tableConflictsResolved;
 
     // =========================
     // EVENTS
@@ -116,6 +153,7 @@ contract BattleManager is ReentrancyGuard {
         address indexed defender,
         uint256 wager
     );
+    // Deprecated: grouped conflicts no longer outbid lower-wager attackers.
     event AttackOutbid(
         uint256 indexed roundId,
         address indexed defender,
@@ -124,6 +162,7 @@ contract BattleManager is ReentrancyGuard {
         uint256 outbidWager,
         uint256 newLeaderWager
     );
+    // Deprecated: resolveBattle now resolves the attacker's whole round table.
     event BattleResolved(
         uint256 indexed roundId,
         address indexed attacker,
@@ -132,6 +171,31 @@ contract BattleManager is ReentrancyGuard {
         uint256 attackerWager,
         uint256 attackerWinChance,
         uint256 goldTransferred
+    );
+    event ConflictParticipant(
+        uint256 indexed roundId,
+        uint256 indexed tableId,
+        bytes32 indexed groupHash,
+        address player,
+        ActionType actionType,
+        address target,
+        uint256 wager,
+        uint256 score
+    );
+    event ConflictWinner(
+        uint256 indexed roundId,
+        uint256 indexed tableId,
+        bytes32 indexed groupHash,
+        address winner,
+        uint256 score
+    );
+    event ConflictGroupResolved(
+        uint256 indexed roundId,
+        uint256 indexed tableId,
+        bytes32 indexed groupHash,
+        uint256 participantCount,
+        uint256 groupStake,
+        uint256 totalGoldTransferred
     );
     event RoundRandomnessSet(uint256 indexed roundId, uint256 randomness);
 
@@ -282,45 +346,52 @@ contract BattleManager is ReentrancyGuard {
     // RESOLVE (LAZY)
     // =========================
 
+    /// @dev Deprecated compatibility shim. Resolves every conflict in the
+    /// attacker's frozen round table instead of resolving one pairwise duel.
     function resolveBattle(address attacker, address defender)
         external
         onlyTournamentManager
         inPhase(Phase.Resolve)
-        nonReentrant
     {
-        Action memory atk = _getActionOrDefault(attacker);
-        BestAttack storage best = bestAttackByDefender[currentRound][defender];
-
+        Action memory atk = _getActionOrDefault(currentRound, attacker);
         require(atk.actionType == ActionType.ATTACK, "attacker not attacking");
         require(atk.target == defender, "wrong target");
-        require(best.attacker == attacker, "attacker was outbid");
-        require(!best.resolved, "battle already resolved");
 
-        uint256 randomness = rounds[currentRound].randomness;
+        uint256 tableId = IBattleTournamentManager(tournamentManager)
+            .getRoundTableOf(currentRound, attacker);
+        require(tableId != 0, "missing round table");
+        resolveTableConflicts(tableId, currentRound);
+    }
+
+    function resolveTableConflicts(uint256 tableId, uint256 roundId)
+        public
+        onlyTournamentManager
+        inPhase(Phase.Resolve)
+        nonReentrant
+    {
+        require(roundId == currentRound, "round mismatch");
+        require(!tableConflictsResolved[roundId][tableId], "table resolved");
+
+        uint256 randomness = rounds[roundId].randomness;
         require(randomness != 0, "randomness not set");
-        uint256 rand = uint256(
-            keccak256(
-                abi.encode(randomness, attacker, defender, currentRound)
-            )
-        ) % 100;
 
-        uint256 winChance = _attackerWinChance(attacker, defender);
+        address[] memory players = IBattleTournamentManager(tournamentManager)
+            .getRoundTablePlayers(roundId, tableId);
+        require(players.length > 0, "empty table");
+        require(players.length <= 9, "table too large");
 
-        bool attackerWon = rand < winChance;
+        Action[] memory actions = new Action[](players.length);
+        for (uint256 i = 0; i < players.length; i++) {
+            actions[i] = _getActionOrDefault(roundId, players[i]);
+        }
 
-        best.resolved = true;
-        uint256 transferred = IBattleTournamentManager(tournamentManager)
-            .settleBattle(attacker, defender, atk.amount, attackerWon);
+        bool[] memory visited = new bool[](players.length);
+        tableConflictsResolved[roundId][tableId] = true;
 
-        emit BattleResolved(
-            currentRound,
-            attacker,
-            defender,
-            attackerWon,
-            atk.amount,
-            winChance,
-            transferred
-        );
+        for (uint256 i = 0; i < players.length; i++) {
+            if (visited[i]) continue;
+            _resolveComponent(roundId, tableId, players, actions, visited, i);
+        }
     }
 
     // =========================
@@ -347,12 +418,12 @@ contract BattleManager is ReentrancyGuard {
         emit Revealed(player, currentRound);
     }
 
-    function _attackerWinChance(address, address defender)
+    function _attackerWinChance(uint256 roundId, address defender)
         internal
         view
         returns (uint256)
     {
-        Action memory defenderAction = _getActionOrDefault(defender);
+        Action memory defenderAction = _getActionOrDefault(roundId, defender);
 
         if (defenderAction.actionType == ActionType.BUILD) return 65;
         if (defenderAction.actionType == ActionType.DEFEND) return 35;
@@ -383,48 +454,6 @@ contract BattleManager is ReentrancyGuard {
             action.target,
             action.amount
         );
-
-        BestAttack storage currentBest = bestAttackByDefender[currentRound][
-            action.target
-        ];
-
-        if (currentBest.attacker == address(0)) {
-            currentBest.attacker = attacker;
-            currentBest.wager = action.amount;
-            return;
-        }
-
-        if (
-            action.amount > currentBest.wager ||
-            (
-                action.amount == currentBest.wager &&
-                _winsTie(attacker, currentBest.attacker, action.target)
-            )
-        ) {
-            address outbidAttacker = currentBest.attacker;
-            uint256 outbidWager = currentBest.wager;
-
-            currentBest.attacker = attacker;
-            currentBest.wager = action.amount;
-
-            emit AttackOutbid(
-                currentRound,
-                action.target,
-                outbidAttacker,
-                attacker,
-                outbidWager,
-                action.amount
-            );
-        } else {
-            emit AttackOutbid(
-                currentRound,
-                action.target,
-                attacker,
-                currentBest.attacker,
-                action.amount,
-                currentBest.wager
-            );
-        }
     }
 
     function _winsTie(
@@ -449,13 +478,261 @@ contract BattleManager is ReentrancyGuard {
         return uint256(tieSeed) % 2 == 1;
     }
 
-    function _getActionOrDefault(address user)
+    function _resolveComponent(
+        uint256 roundId,
+        uint256 tableId,
+        address[] memory players,
+        Action[] memory actions,
+        bool[] memory visited,
+        uint256 start
+    ) internal {
+        uint256[] memory queue = new uint256[](players.length);
+        bool[] memory inGroup = new bool[](players.length);
+        uint256 cursor;
+        uint256 count;
+
+        queue[count++] = start;
+        visited[start] = true;
+        inGroup[start] = true;
+
+        while (cursor < count) {
+            uint256 current = queue[cursor++];
+            for (uint256 i = 0; i < players.length; i++) {
+                if (visited[i]) continue;
+                if (
+                    _hasAttackEdge(actions[current], players[i]) ||
+                    _hasAttackEdge(actions[i], players[current])
+                ) {
+                    visited[i] = true;
+                    inGroup[i] = true;
+                    queue[count++] = i;
+                }
+            }
+        }
+
+        bool hasAttack;
+        for (uint256 i = 0; i < players.length; i++) {
+            if (inGroup[i] && actions[i].actionType == ActionType.ATTACK) {
+                hasAttack = true;
+                break;
+            }
+        }
+
+        if (!hasAttack) return;
+
+        ConflictContext memory ctx = ConflictContext({
+            roundId: roundId,
+            tableId: tableId,
+            groupHash: _groupHash(roundId, tableId, players, inGroup),
+            tablePlayers: players,
+            actions: actions,
+            inGroup: inGroup
+        });
+
+        _resolveConflictGroup(ctx, count);
+    }
+
+    function _resolveConflictGroup(
+        ConflictContext memory ctx,
+        uint256 participantCount
+    ) internal {
+        address[] memory participants = new address[](participantCount);
+        uint256[] memory scores = new uint256[](participantCount);
+        uint256 cursor;
+
+        address winner;
+        uint256 winnerScore;
+        uint256 groupStake;
+
+        for (uint256 i = 0; i < ctx.tablePlayers.length; i++) {
+            if (!ctx.inGroup[i]) continue;
+
+            uint256 score = _participantScore(ctx, i);
+
+            participants[cursor] = ctx.tablePlayers[i];
+            if (
+                ctx.actions[i].actionType == ActionType.ATTACK &&
+                ctx.actions[i].amount > groupStake
+            ) {
+                groupStake = ctx.actions[i].amount;
+            }
+            scores[cursor] = score;
+
+            if (
+                winner == address(0) ||
+                score > winnerScore ||
+                (
+                    score == winnerScore &&
+                    _winsScoreTie(ctx, ctx.tablePlayers[i], winner)
+                )
+            ) {
+                winner = ctx.tablePlayers[i];
+                winnerScore = score;
+            }
+
+            cursor++;
+        }
+
+        uint256 transferred = IBattleTournamentManager(tournamentManager)
+            .settleConflictGroup(ctx.roundId, winner, participants, groupStake);
+
+        for (uint256 i = 0; i < participants.length; i++) {
+            Action memory action = _getActionOrDefault(ctx.roundId, participants[i]);
+            emit ConflictParticipant(
+                ctx.roundId,
+                ctx.tableId,
+                ctx.groupHash,
+                participants[i],
+                action.actionType,
+                action.target,
+                action.actionType == ActionType.ATTACK ? action.amount : 0,
+                scores[i]
+            );
+        }
+
+        emit ConflictWinner(
+            ctx.roundId,
+            ctx.tableId,
+            ctx.groupHash,
+            winner,
+            winnerScore
+        );
+        emit ConflictGroupResolved(
+            ctx.roundId,
+            ctx.tableId,
+            ctx.groupHash,
+            participants.length,
+            groupStake,
+            transferred
+        );
+    }
+
+    function _participantScore(ConflictContext memory ctx, uint256 playerIndex)
+        internal
+        view
+        returns (uint256)
+    {
+        address player = ctx.tablePlayers[playerIndex];
+        Action memory action = ctx.actions[playerIndex];
+        uint256 score = BASE_SCORE + (
+            uint256(
+                keccak256(
+                    abi.encode(
+                        rounds[ctx.roundId].randomness,
+                        ctx.roundId,
+                        ctx.tableId,
+                        ctx.groupHash,
+                        player
+                    )
+                )
+            ) % RANDOM_SCORE_RANGE
+        );
+        uint256 army = IBattleTournamentManager(tournamentManager).getPlayerArmy(
+            player
+        );
+        score += army / ARMY_SCORE_DIVISOR;
+
+        if (action.actionType == ActionType.ATTACK) {
+            score += action.amount;
+            uint256 targetIndex = _indexOf(ctx.tablePlayers, action.target);
+            if (targetIndex < ctx.tablePlayers.length) {
+                if (ctx.actions[targetIndex].actionType == ActionType.BUILD) {
+                    score += ATTACK_VS_BUILD_BONUS;
+                } else if (ctx.actions[targetIndex].actionType == ActionType.DEFEND) {
+                    score -= ATTACK_VS_DEFEND_PENALTY;
+                }
+            }
+        } else if (action.actionType == ActionType.DEFEND) {
+            if (_incomingAttackCount(
+                player,
+                ctx.tablePlayers,
+                ctx.actions,
+                ctx.inGroup
+            ) > 0) {
+                score += DEFEND_BONUS;
+            }
+        }
+
+        return score;
+    }
+
+    function _incomingAttackCount(
+        address player,
+        address[] memory tablePlayers,
+        Action[] memory actions,
+        bool[] memory inGroup
+    ) internal pure returns (uint256 count) {
+        for (uint256 i = 0; i < tablePlayers.length; i++) {
+            if (
+                inGroup[i] &&
+                actions[i].actionType == ActionType.ATTACK &&
+                actions[i].target == player
+            ) {
+                count++;
+            }
+        }
+    }
+
+    function _hasAttackEdge(Action memory action, address target)
+        internal
+        pure
+        returns (bool)
+    {
+        return action.actionType == ActionType.ATTACK && action.target == target;
+    }
+
+    function _indexOf(address[] memory players, address player)
+        internal
+        pure
+        returns (uint256)
+    {
+        for (uint256 i = 0; i < players.length; i++) {
+            if (players[i] == player) return i;
+        }
+
+        return players.length;
+    }
+
+    function _groupHash(
+        uint256 roundId,
+        uint256 tableId,
+        address[] memory players,
+        bool[] memory inGroup
+    ) internal pure returns (bytes32 groupHash) {
+        groupHash = keccak256(abi.encode(roundId, tableId));
+        for (uint256 i = 0; i < players.length; i++) {
+            if (inGroup[i]) {
+                groupHash = keccak256(abi.encode(groupHash, players[i]));
+            }
+        }
+    }
+
+    function _winsScoreTie(
+        ConflictContext memory ctx,
+        address challenger,
+        address incumbent
+    ) internal view returns (bool) {
+        return uint256(
+            keccak256(
+                abi.encode(
+                    rounds[ctx.roundId].randomness,
+                    ctx.roundId,
+                    ctx.tableId,
+                    ctx.groupHash,
+                    challenger,
+                    incumbent
+                )
+            )
+        ) % 2 == 1;
+    }
+
+    function _getActionOrDefault(uint256 roundId, address user)
         internal
         view
         returns (Action memory)
     {
-        if (hasRevealed[currentRound][user]) {
-            return revealed[currentRound][user];
+        if (hasRevealed[roundId][user]) {
+            return revealed[roundId][user];
         }
 
         // default fallback if not revealed

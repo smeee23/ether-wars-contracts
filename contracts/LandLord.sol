@@ -13,7 +13,7 @@ contract LandLord is Initializable {
     enum ResourceType {
         Food,
         Water,
-        Population,
+        Shelter,
         Army
     }
 
@@ -30,7 +30,7 @@ contract LandLord is Initializable {
         uint256 gold;
         uint256 food;
         uint256 water;
-        uint256 population;
+        uint256 shelter;
         uint256 army;
     }
 
@@ -60,14 +60,23 @@ contract LandLord is Initializable {
     uint256 public constant BARRACK_ATTACK = 10;
     uint256 public constant ARMY_ATTACK = 2;
 
-    uint256 public constant FOOD_DECAY = 3;
-    uint256 public constant WATER_DECAY = 3;
-    uint256 public constant POPULATION_DECAY = 1;
-    uint256 public constant ARMY_DECAY = 1;
+    uint256 public constant STARTING_GOLD = 100;
+    uint256 public constant STARTING_FOOD = 100;
+    uint256 public constant STARTING_WATER = 100;
+    uint256 public constant STARTING_SHELTER = 100;
+    uint256 public constant STARTING_ARMY = 40;
+
+    uint256 public constant FOOD_UPKEEP = 3;
+    uint256 public constant WATER_UPKEEP = 3;
+    uint256 public constant SHELTER_UPKEEP = 2;
+    uint256 public constant ARMY_UPKEEP = 1;
+    uint256 public constant POPULATION_BASE = 10;
+    uint256 public constant POPULATION_GROWTH_PER_ROUND = 1;
+    uint256 public constant POPULATION_UPKEEP_INTERVAL = 10;
     uint256 public constant REPLENISH_PER_GOLD = 10;
     uint256 public constant BUILD_FOOD_GAIN = 12;
     uint256 public constant BUILD_WATER_GAIN = 12;
-    uint256 public constant BUILD_POPULATION_GAIN = 2;
+    uint256 public constant BUILD_SHELTER_GAIN = 6;
     uint256 public constant BUILD_ARMY_GAIN = 2;
 
     address public lord;
@@ -82,15 +91,24 @@ contract LandLord is Initializable {
     event GoldAwarded(uint256 amount);
     event GoldTransferred(address indexed winnerLandLord, uint256 amount);
     event ResourceReplenished(ResourceType indexed resource, uint256 goldSpent, uint256 amountAdded);
-    event BuildActionApplied(uint256 food, uint256 water, uint256 population, uint256 army);
+    event BuildActionApplied(uint256 food, uint256 water, uint256 shelter, uint256 army);
+    event RoundUpkeepApplied(
+        uint256 indexed round,
+        uint256 population,
+        uint256 foodLost,
+        uint256 waterLost,
+        uint256 shelterLost,
+        uint256 armyLost,
+        bool eliminated
+    );
     event RoundDecayApplied(
         uint256 indexed round,
         uint256 foodLost,
         uint256 waterLost,
-        uint256 populationLost,
+        uint256 shelterLost,
         uint256 armyLost
     );
-    event BattleLossApplied(uint256 armyLost, uint256 populationLost);
+    event BattleLossApplied(uint256 armyLost);
     event AttackWagerSpent(uint256 amount);
     event DefenseWagerSpent(uint256 amount);
 
@@ -159,50 +177,47 @@ contract LandLord is Initializable {
         build(BuildingType.Barracks, amount);
     }
 
+    function spendGoldToReplenish(ResourceType resource, uint256 goldAmount)
+        external
+        onlyLord
+    {
+        _replenish(resource, goldAmount);
+    }
+
     function replenishResource(ResourceType resource, uint256 goldAmount)
         external
         onlyLord
     {
-        _spendGold(goldAmount);
-        uint256 replenished = goldAmount * REPLENISH_PER_GOLD;
-
-        if (resource == ResourceType.Food) resources.food += replenished;
-        else if (resource == ResourceType.Water) resources.water += replenished;
-        else if (resource == ResourceType.Population) resources.population += replenished;
-        else if (resource == ResourceType.Army) resources.army += replenished;
-
-        emit ResourceReplenished(resource, goldAmount, replenished);
+        _replenish(resource, goldAmount);
     }
 
-    function applyRoundDecay(uint256 roundNumber) external onlyController {
-        uint256 pressure = 1 + (roundNumber / 10);
-        uint256 foodLoss = _reduceFood(FOOD_DECAY * pressure);
-        uint256 waterLoss = _reduceWater(WATER_DECAY * pressure);
-        uint256 populationLoss = _reducePopulation(POPULATION_DECAY * pressure);
-        uint256 armyLoss = _reduceArmy(ARMY_DECAY * pressure);
+    function applyRoundUpkeep(address player, uint256 roundId)
+        external
+        onlyController
+        returns (bool eliminated)
+    {
+        require(player == lord, "wrong player");
+        eliminated = _applyRoundUpkeep(roundId);
+    }
 
-        resources.food += buildings.farms * FARM_FOOD_PRODUCTION;
-        resources.water += buildings.wells * WELL_WATER_PRODUCTION;
-
-        emit RoundDecayApplied(
-            roundNumber,
-            foodLoss,
-            waterLoss,
-            populationLoss,
-            armyLoss
-        );
+    function applyRoundDecay(uint256 roundNumber)
+        external
+        onlyController
+        returns (bool eliminated)
+    {
+        eliminated = _applyRoundUpkeep(roundNumber);
     }
 
     function applyBuildAction() external onlyController {
         resources.food += BUILD_FOOD_GAIN;
         resources.water += BUILD_WATER_GAIN;
-        resources.population += BUILD_POPULATION_GAIN;
+        resources.shelter += BUILD_SHELTER_GAIN;
         resources.army += BUILD_ARMY_GAIN;
 
         emit BuildActionApplied(
             BUILD_FOOD_GAIN,
             BUILD_WATER_GAIN,
-            BUILD_POPULATION_GAIN,
+            BUILD_SHELTER_GAIN,
             BUILD_ARMY_GAIN
         );
     }
@@ -211,9 +226,9 @@ contract LandLord is Initializable {
         external
         onlyController
     {
+        populationLoss;
         uint256 actualArmyLoss = _reduceArmy(armyLoss);
-        uint256 actualPopulationLoss = _reducePopulation(populationLoss);
-        emit BattleLossApplied(actualArmyLoss, actualPopulationLoss);
+        emit BattleLossApplied(actualArmyLoss);
     }
 
     function spendAttackWager(uint256 amount) external onlyController {
@@ -256,6 +271,35 @@ contract LandLord is Initializable {
         return resources;
     }
 
+    function getPopulationEstimate() external pure returns (uint256) {
+        return getPopulationEstimate(0);
+    }
+
+    function getPopulationEstimate(uint256 roundId) public pure returns (uint256) {
+        return POPULATION_BASE + (roundId * POPULATION_GROWTH_PER_ROUND);
+    }
+
+    function isEliminatedByResources() public view returns (bool) {
+        return (
+            resources.gold == 0 ||
+            resources.food == 0 ||
+            resources.water == 0 ||
+            resources.shelter == 0 ||
+            resources.army == 0
+        );
+    }
+
+    function canSurviveNextRound() external view returns (bool) {
+        uint256 pressure = 1 + (getPopulationEstimate(1) / POPULATION_UPKEEP_INTERVAL);
+        return (
+            resources.gold > 0 &&
+            resources.food > FOOD_UPKEEP * pressure &&
+            resources.water > WATER_UPKEEP * pressure &&
+            resources.shelter > SHELTER_UPKEEP * pressure &&
+            resources.army > ARMY_UPKEEP * pressure
+        );
+    }
+
     function getBuildings() external view returns (Buildings memory) {
         return buildings;
     }
@@ -270,10 +314,10 @@ contract LandLord is Initializable {
         uint256 defensePower =
             (buildings.walls * WALL_DEFENSE) +
             (buildings.towers * TOWER_DEFENSE) +
-            resources.population;
+            getPopulationEstimate(0);
 
         return CityStats({
-            population: resources.population,
+            population: getPopulationEstimate(0),
             populationCapacity: capacity,
             attackPower: attackPower,
             defensePower: defensePower,
@@ -323,6 +367,52 @@ contract LandLord is Initializable {
         emit GoldSpent(amount);
     }
 
+    function _replenish(ResourceType resource, uint256 goldAmount) internal {
+        _spendGold(goldAmount);
+        uint256 replenished = goldAmount * REPLENISH_PER_GOLD;
+
+        if (resource == ResourceType.Food) resources.food += replenished;
+        else if (resource == ResourceType.Water) resources.water += replenished;
+        else if (resource == ResourceType.Shelter) resources.shelter += replenished;
+        else if (resource == ResourceType.Army) resources.army += replenished;
+
+        emit ResourceReplenished(resource, goldAmount, replenished);
+    }
+
+    function _applyRoundUpkeep(uint256 roundId)
+        internal
+        returns (bool eliminated)
+    {
+        uint256 population = getPopulationEstimate(roundId);
+        uint256 pressure = 1 + (population / POPULATION_UPKEEP_INTERVAL);
+
+        resources.food += buildings.farms * FARM_FOOD_PRODUCTION;
+        resources.water += buildings.wells * WELL_WATER_PRODUCTION;
+
+        uint256 foodLoss = _reduceFood(FOOD_UPKEEP * pressure);
+        uint256 waterLoss = _reduceWater(WATER_UPKEEP * pressure);
+        uint256 shelterLoss = _reduceShelter(SHELTER_UPKEEP * pressure);
+        uint256 armyLoss = _reduceArmy(ARMY_UPKEEP * pressure);
+
+        eliminated = isEliminatedByResources();
+        emit RoundUpkeepApplied(
+            roundId,
+            population,
+            foodLoss,
+            waterLoss,
+            shelterLoss,
+            armyLoss,
+            eliminated
+        );
+        emit RoundDecayApplied(
+            roundId,
+            foodLoss,
+            waterLoss,
+            shelterLoss,
+            armyLoss
+        );
+    }
+
     function _reduceFood(uint256 amount) internal returns (uint256) {
         uint256 loss = amount > resources.food ? resources.food : amount;
         resources.food -= loss;
@@ -335,15 +425,15 @@ contract LandLord is Initializable {
         return loss;
     }
 
-    function _reducePopulation(uint256 amount) internal returns (uint256) {
-        uint256 loss = amount > resources.population ? resources.population : amount;
-        resources.population -= loss;
-        return loss;
-    }
-
     function _reduceArmy(uint256 amount) internal returns (uint256) {
         uint256 loss = amount > resources.army ? resources.army : amount;
         resources.army -= loss;
+        return loss;
+    }
+
+    function _reduceShelter(uint256 amount) internal returns (uint256) {
+        uint256 loss = amount > resources.shelter ? resources.shelter : amount;
+        resources.shelter -= loss;
         return loss;
     }
 }

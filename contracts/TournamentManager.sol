@@ -10,6 +10,7 @@ interface ITournamentBattleManager {
     function startNextRound() external returns (uint256);
     function setRoundRandomness(uint256 roundId, uint256 randomness) external;
     function resolveBattle(address attacker, address defender) external;
+    function resolveTableConflicts(uint256 tableId, uint256 roundId) external;
     function currentRound() external view returns (uint256);
     function canEndRound() external view returns (bool);
     function getRoundRandomness(uint256 roundId) external view returns (uint256);
@@ -33,8 +34,8 @@ contract TournamentManager is ReentrancyGuard {
     uint256 public constant STARTING_GOLD = 100;
     uint256 public constant STARTING_FOOD = 100;
     uint256 public constant STARTING_WATER = 100;
+    uint256 public constant STARTING_SHELTER = 100;
     uint256 public constant STARTING_ARMY = 40;
-    uint256 public constant STARTING_POPULATION = 10;
 
     enum TournamentState {
         Registration,
@@ -79,6 +80,7 @@ contract TournamentManager is ReentrancyGuard {
     mapping(uint256 => address[]) private tablePlayers;
     mapping(uint256 => mapping(address => bool)) public roundPlayerActive;
     mapping(uint256 => mapping(address => uint256)) public roundTableOf;
+    mapping(uint256 => mapping(uint256 => address[])) private roundTablePlayers;
     mapping(uint256 => uint256) public vrfRequestToRound;
 
     event PlayerRegistered(address indexed player, address indexed landLord);
@@ -102,6 +104,14 @@ contract TournamentManager is ReentrancyGuard {
         bool attackerWon,
         uint256 wager,
         uint256 goldTransferred
+    );
+    event ConflictGoldSettled(
+        uint256 indexed roundId,
+        address indexed winner,
+        address indexed loser,
+        uint256 groupStake,
+        uint256 goldTransferred,
+        bool loserEliminated
     );
     event BuildActionApplied(address indexed player, address indexed landLord);
     event TableCreated(uint256 indexed tableId);
@@ -205,7 +215,7 @@ contract TournamentManager is ReentrancyGuard {
             gold: STARTING_GOLD,
             food: STARTING_FOOD,
             water: STARTING_WATER,
-            population: STARTING_POPULATION,
+            shelter: STARTING_SHELTER,
             army: STARTING_ARMY
         });
         LandLord(landLordAddress).initialize(
@@ -336,14 +346,12 @@ contract TournamentManager is ReentrancyGuard {
         require(defenderLandLord != address(0), "missing defender city");
 
         if (attackerWon) {
-            uint256 defenderGold = LandLord(defenderLandLord).getGold();
             transferred = LandLord(defenderLandLord).transferGoldToWinner(
                 attackerLandLord,
                 wager
             );
             LandLord(attackerLandLord).awardGold(transferred);
-
-            if (defenderGold < wager || LandLord(defenderLandLord).getGold() == 0) {
+            if (LandLord(defenderLandLord).isEliminatedByResources()) {
                 _eliminatePlayer(defender);
             }
         } else {
@@ -352,13 +360,71 @@ contract TournamentManager is ReentrancyGuard {
                 wager
             );
             LandLord(defenderLandLord).awardGold(transferred);
-
-            if (LandLord(attackerLandLord).getGold() == 0) {
+            if (LandLord(attackerLandLord).isEliminatedByResources()) {
                 _eliminatePlayer(attacker);
             }
         }
 
         emit BattleSettled(attacker, defender, attackerWon, wager, transferred);
+    }
+
+    function settleConflictGroup(
+        uint256 roundId,
+        address winner,
+        address[] calldata participants,
+        uint256 groupStake
+    ) external onlyBattleManager returns (uint256 totalTransferred) {
+        require(participants.length > 1, "invalid group");
+        require(groupStake > 0, "invalid stake");
+        require(roundPlayerActive[roundId][winner], "winner not in round");
+        require(playerInfo[winner].active, "winner inactive");
+
+        address winnerLandLord = playerInfo[winner].landLord;
+        require(winnerLandLord != address(0), "missing winner city");
+
+        for (uint256 i = 0; i < participants.length; i++) {
+            address loser = participants[i];
+            require(roundPlayerActive[roundId][loser], "participant not in round");
+            require(playerInfo[loser].landLord != address(0), "missing loser city");
+
+            if (loser == winner) continue;
+
+            uint256 transferred = LandLord(playerInfo[loser].landLord)
+                .transferGoldToWinner(winnerLandLord, groupStake);
+            if (transferred > 0) {
+                LandLord(winnerLandLord).awardGold(transferred);
+                totalTransferred += transferred;
+            }
+
+            bool loserEliminated = false;
+            if (
+                playerInfo[loser].active &&
+                LandLord(playerInfo[loser].landLord).isEliminatedByResources()
+            ) {
+                _eliminatePlayer(loser);
+                loserEliminated = true;
+            }
+
+            emit ConflictGoldSettled(
+                roundId,
+                winner,
+                loser,
+                groupStake,
+                transferred,
+                loserEliminated
+            );
+        }
+
+        for (uint256 i = 0; i < participants.length; i++) {
+            address player = participants[i];
+            if (player == winner) continue;
+            if (
+                playerInfo[player].active &&
+                LandLord(playerInfo[player].landLord).isEliminatedByResources()
+            ) {
+                _eliminatePlayer(player);
+            }
+        }
     }
 
     function applyBuildAction(address player) external onlyBattleManager {
@@ -376,6 +442,17 @@ contract TournamentManager is ReentrancyGuard {
         inState(TournamentState.Active)
     {
         ITournamentBattleManager(battleManager).resolveBattle(attacker, defender);
+    }
+
+    function resolveTableConflicts(uint256 tableId, uint256 roundId)
+        external
+        onlyAdmin
+        inState(TournamentState.Active)
+    {
+        ITournamentBattleManager(battleManager).resolveTableConflicts(
+            tableId,
+            roundId
+        );
     }
 
     function settleTournament() external onlyAdmin inState(TournamentState.Complete) {
@@ -454,6 +531,22 @@ contract TournamentManager is ReentrancyGuard {
         returns (address[] memory)
     {
         return tablePlayers[tableId];
+    }
+
+    function getRoundTablePlayers(uint256 roundId, uint256 tableId)
+        external
+        view
+        returns (address[] memory)
+    {
+        return roundTablePlayers[roundId][tableId];
+    }
+
+    function getRoundTableOf(uint256 roundId, address player)
+        external
+        view
+        returns (uint256)
+    {
+        return roundTableOf[roundId][player];
     }
 
     function getActiveTablePlayers(uint256 tableId)
@@ -539,6 +632,12 @@ contract TournamentManager is ReentrancyGuard {
         return LandLord(info.landLord).getGold();
     }
 
+    function getPlayerArmy(address player) external view returns (uint256) {
+        PlayerInfo memory info = playerInfo[player];
+        if (!info.active || info.landLord == address(0)) return 0;
+        return LandLord(info.landLord).getResources().army;
+    }
+
     function _isSameTable(address a, address b) internal view returns (bool) {
         PlayerInfo memory aInfo = playerInfo[a];
         PlayerInfo memory bInfo = playerInfo[b];
@@ -573,6 +672,7 @@ contract TournamentManager is ReentrancyGuard {
 
             roundPlayerActive[roundId][player] = true;
             roundTableOf[roundId][player] = info.tableId;
+            roundTablePlayers[roundId][info.tableId].push(player);
         }
     }
 
@@ -582,7 +682,10 @@ contract TournamentManager is ReentrancyGuard {
             PlayerInfo memory info = playerInfo[player];
             if (!info.active || info.landLord == address(0)) continue;
 
-            LandLord(info.landLord).applyRoundDecay(roundId);
+            bool eliminated = LandLord(info.landLord).applyRoundUpkeep(player, roundId);
+            if (eliminated && playerInfo[player].active) {
+                _eliminatePlayer(player);
+            }
         }
     }
 
