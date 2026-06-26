@@ -4,7 +4,7 @@ Smart contracts for an onchain tournament strategy game. Players enter a tournam
 
 ## Project Overview
 
-The current architecture is tournament-based, not a persistent world or insurance protocol. ETH principal and yield/profit are handled at the tournament layer through a generic yield adapter. Gameplay state is virtual: gold, food, water, population, and army are tracked in contracts and are not ERC20/aToken balances.
+The current architecture is tournament-based, not a persistent world or insurance protocol. ETH principal and yield/profit are handled at the tournament layer through a generic yield adapter. Gameplay state is virtual: gold, food, water, oxygen, shelter, and army are tracked in contracts and are not ERC20/aToken balances.
 
 ## Current Architecture
 
@@ -27,18 +27,19 @@ WorldGraph
 
 ## Main Contracts
 
-- `contracts/LandLordFactory.sol`
+- `contracts/TournamentManager.sol`
   - Defines `TournamentManager`.
   - Handles equal entry deposits, player registration, table assignment, round transitions, principal/yield accounting, LandLord clone creation, battle settlement hooks, and VRF handoff.
 
 - `contracts/BattleManager.sol`
   - Handles commit/reveal rounds.
   - Current actions are `ATTACK`, `DEFEND`, and `BUILD`.
-  - Enforces one attack per player per round and keeps only the highest-wager attack per defender.
+  - Enforces one attack per player per round and resolves connected conflict groups.
 
 - `contracts/LandLord.sol`
-  - Per-player virtual city/resource state.
-  - Tracks gold, food, water, population, army, buildings, derived attack/defense stats, build actions, decay, and gold transfers.
+  - Per-player virtual resource state.
+  - Tracks gold, food, water, oxygen, shelter, army, derived population, build stabilization, decay, and gold transfers.
+  - Does not track buildings or tiles; those are front-end abstractions.
   - Does not hold ETH, aTokens, or yield assets.
 
 - `contracts/interfaces/protocol/IYieldAdapter.sol`
@@ -73,11 +74,11 @@ Actions:
 - `DEFEND`: default action if a player does not reveal; no wager.
 - `BUILD`: no wager; improves non-gold resources through LandLord.
 
-If multiple players attack the same defender in one round, only the highest gold wager is eligible to resolve. Ties use available randomness when possible, with deterministic fallback logic.
+Attacks are resolved as connected conflict groups within a frozen round table. The largest attack wager in the group becomes the group stake, and participant scores use randomness, army, wager, and action matchups.
 
 ## Resource Model
 
-Gold is the main tournament survival currency and the only attack wager. Food, water, population, and army are virtual game resources used for build/decay/stat mechanics.
+Gold is the main tournament survival currency and the only attack wager. Players can allocate gold directly into food, water, oxygen, shelter, or army at a 1:1 ratio. Food, water, oxygen, shelter, and army decay from derived population pressure each round; population is calculated from the round number and is not stored as mutable player state.
 
 LandLord owns gameplay accounting only. ETH principal, yield, and adapter shares stay in TournamentManager/yield adapter logic.
 
@@ -103,7 +104,6 @@ Notably:
 
 ## Development Notes / TODOs
 
-- Rename `LandLordFactory.sol` to match its current `TournamentManager` contract.
 - Extract local manager/provider interfaces into dedicated interface files.
 - Add tests for registration, table snapshots, commit/reveal, battle settlement, rebalancing, principal claims, and yield claims.
 - Replace `NoYieldAdapter` with a real audited adapter only after choosing the final yield source.
