@@ -39,12 +39,12 @@ interface ITournamentVRFProvider {
  */
 contract TournamentManager is ReentrancyGuard {
     uint256 public constant MAX_TABLE_SIZE = 9;
-    uint256 public constant STARTING_GOLD = 100;
-    uint256 public constant STARTING_FOOD = 100;
-    uint256 public constant STARTING_WATER = 100;
-    uint256 public constant STARTING_OXYGEN = 100;
-    uint256 public constant STARTING_SHELTER = 100;
-    uint256 public constant STARTING_ARMY = 40;
+    uint256 public constant STARTING_GOLD = 1000;
+    uint256 public constant STARTING_FOOD = 0;
+    uint256 public constant STARTING_WATER = 0;
+    uint256 public constant STARTING_OXYGEN = 0;
+    uint256 public constant STARTING_SHELTER = 0;
+    uint256 public constant STARTING_ARMY = 0;
 
     enum TournamentState {
         Registration,

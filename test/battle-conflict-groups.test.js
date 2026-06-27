@@ -335,16 +335,16 @@ describe("BattleManager connected conflict groups", function () {
     const aResources = await aLandLord.getResources();
     const bResources = await bLandLord.getResources();
 
-    expect(aResources.food.toString()).to.equal("94");
-    expect(aResources.water.toString()).to.equal("94");
-    expect(aResources.oxygen.toString()).to.equal("94");
-    expect(aResources.shelter.toString()).to.equal("96");
-    expect(aResources.army.toString()).to.equal("38");
-    expect(bResources.food.toString()).to.equal("94");
-    expect(bResources.water.toString()).to.equal("94");
-    expect(bResources.oxygen.toString()).to.equal("94");
-    expect(bResources.shelter.toString()).to.equal("96");
-    expect(bResources.army.toString()).to.equal("38");
+    expect(aResources.food.toString()).to.equal("100");
+    expect(aResources.water.toString()).to.equal("100");
+    expect(aResources.oxygen.toString()).to.equal("100");
+    expect(aResources.shelter.toString()).to.equal("100");
+    expect(aResources.army.toString()).to.equal("40");
+    expect(bResources.food.toString()).to.equal("100");
+    expect(bResources.water.toString()).to.equal("100");
+    expect(bResources.oxygen.toString()).to.equal("100");
+    expect(bResources.shelter.toString()).to.equal("100");
+    expect(bResources.army.toString()).to.equal("40");
     expect((await bLandLord.supportCredits()).toString()).to.equal("1");
     expect((await bLandLord.effectiveRoundForSupport(roundId)).toString()).to.equal("0");
   });

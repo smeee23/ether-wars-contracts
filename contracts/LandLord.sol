@@ -31,21 +31,9 @@ contract LandLord is Initializable {
     struct ResourceStats {
         uint256 population;
         uint256 attackPower;
-        uint256 defensePower;
     }
 
-    uint256 public constant STARTING_GOLD = 100;
-    uint256 public constant STARTING_FOOD = 100;
-    uint256 public constant STARTING_WATER = 100;
-    uint256 public constant STARTING_OXYGEN = 100;
-    uint256 public constant STARTING_SHELTER = 100;
-    uint256 public constant STARTING_ARMY = 40;
-
-    uint256 public constant FOOD_UPKEEP = 3;
-    uint256 public constant WATER_UPKEEP = 3;
-    uint256 public constant OXYGEN_UPKEEP = 3;
-    uint256 public constant SHELTER_UPKEEP = 2;
-    uint256 public constant ARMY_UPKEEP = 1;
+    uint256 public constant RESOURCE_UPKEEP = 3;
     uint256 public constant POPULATION_BASE = 10;
     uint256 public constant POPULATION_GROWTH_PER_ROUND = 1;
     uint256 public constant POPULATION_UPKEEP_INTERVAL = 10;
@@ -63,23 +51,15 @@ contract LandLord is Initializable {
     event GoldTransferred(address indexed winnerLandLord, uint256 amount);
     event ResourceAllocated(ResourceType indexed resource, uint256 goldSpent, uint256 amountAdded);
     event BuildSupportCreditStored(uint256 supportCredits);
-    event RoundUpkeepApplied(
+    event SupportCheckApplied(
         uint256 indexed round,
         uint256 population,
-        uint256 foodLost,
-        uint256 waterLost,
-        uint256 oxygenLost,
-        uint256 shelterLost,
-        uint256 armyLost,
+        uint256 foodRequired,
+        uint256 waterRequired,
+        uint256 oxygenRequired,
+        uint256 shelterRequired,
+        uint256 armyRequired,
         bool eliminated
-    );
-    event RoundDecayApplied(
-        uint256 indexed round,
-        uint256 foodLost,
-        uint256 waterLost,
-        uint256 oxygenLost,
-        uint256 shelterLost,
-        uint256 armyLost
     );
     event BattleLossApplied(uint256 armyLost);
     event AttackWagerSpent(uint256 amount);
@@ -237,38 +217,65 @@ contract LandLord is Initializable {
     }
 
     function effectiveRoundForSupport(uint256 roundId) public view returns (uint256) {
-        if (supportCredits >= roundId) return 0;
-        return roundId - supportCredits;
+        uint256 supportOffset = supportCredits * 2;
+        if (supportOffset >= roundId) return 0;
+        return roundId - supportOffset;
     }
 
     function isEliminatedByResources() public view returns (bool) {
+        return resources.gold == 0;
+    }
+
+    function canSupportRound(uint256 roundId) public view returns (bool) {
+        (
+            uint256 foodRequired,
+            uint256 waterRequired,
+            uint256 oxygenRequired,
+            uint256 shelterRequired,
+            uint256 armyRequired
+        ) = supportRequirements(roundId);
+
         return (
-            resources.gold == 0 ||
-            resources.food == 0 ||
-            resources.water == 0 ||
-            resources.oxygen == 0 ||
-            resources.shelter == 0 ||
-            resources.army == 0
+            resources.gold > 0 &&
+            resources.food >= foodRequired &&
+            resources.water >= waterRequired &&
+            resources.oxygen >= oxygenRequired &&
+            resources.shelter >= shelterRequired &&
+            resources.army >= armyRequired
         );
     }
 
-    function canSurviveNextRound() external view returns (bool) {
-        uint256 pressure = _supportPressure(1);
-        return (
-            resources.gold > 0 &&
-            resources.food > FOOD_UPKEEP * pressure &&
-            resources.water > WATER_UPKEEP * pressure &&
-            resources.oxygen > OXYGEN_UPKEEP * pressure &&
-            resources.shelter > SHELTER_UPKEEP * pressure &&
-            resources.army > ARMY_UPKEEP * pressure
-        );
+    function isEliminatedByResourcesForRound(uint256 roundId)
+        public
+        view
+        returns (bool)
+    {
+        return !canSupportRound(roundId);
+    }
+
+    function supportRequirements(uint256 roundId)
+        public
+        view
+        returns (
+            uint256 foodRequired,
+            uint256 waterRequired,
+            uint256 oxygenRequired,
+            uint256 shelterRequired,
+            uint256 armyRequired
+        )
+    {
+        uint256 pressure = _supportPressure(roundId);
+        foodRequired = RESOURCE_UPKEEP * pressure;
+        waterRequired = RESOURCE_UPKEEP * pressure;
+        oxygenRequired = RESOURCE_UPKEEP * pressure;
+        shelterRequired = RESOURCE_UPKEEP * pressure;
+        armyRequired = RESOURCE_UPKEEP * pressure;
     }
 
     function getResourceStats(uint256 roundId) public view returns (ResourceStats memory) {
         return ResourceStats({
             population: populationForRound(effectiveRoundForSupport(roundId)),
-            attackPower: resources.army,
-            defensePower: resources.army
+            attackPower: resources.army
         });
     }
 
@@ -277,10 +284,6 @@ contract LandLord is Initializable {
     }
 
     function getAttackPower() external view returns (uint256) {
-        return resources.army;
-    }
-
-    function getDefensePower() external view returns (uint256) {
         return resources.army;
     }
 
@@ -312,44 +315,30 @@ contract LandLord is Initializable {
         internal
         returns (bool eliminated)
     {
-        uint256 pressure = _supportPressure(roundId);
+        (
+            uint256 foodRequired,
+            uint256 waterRequired,
+            uint256 oxygenRequired,
+            uint256 shelterRequired,
+            uint256 armyRequired
+        ) = supportRequirements(roundId);
 
-        uint256 foodLoss;
-        uint256 waterLoss;
-        uint256 oxygenLoss;
-        uint256 shelterLoss;
-        uint256 armyLoss;
-
-        foodLoss = _reduceFood(FOOD_UPKEEP * pressure);
-        waterLoss = _reduceWater(WATER_UPKEEP * pressure);
-        oxygenLoss = _reduceOxygen(OXYGEN_UPKEEP * pressure);
-        shelterLoss = _reduceShelter(SHELTER_UPKEEP * pressure);
-        armyLoss = _reduceArmy(ARMY_UPKEEP * pressure);
-
-        eliminated = isEliminatedByResources();
-        emit RoundUpkeepApplied(
+        eliminated = isEliminatedByResourcesForRound(roundId);
+        emit SupportCheckApplied(
             roundId,
             populationForRound(effectiveRoundForSupport(roundId)),
-            foodLoss,
-            waterLoss,
-            oxygenLoss,
-            shelterLoss,
-            armyLoss,
+            foodRequired,
+            waterRequired,
+            oxygenRequired,
+            shelterRequired,
+            armyRequired,
             eliminated
-        );
-        emit RoundDecayApplied(
-            roundId,
-            foodLoss,
-            waterLoss,
-            oxygenLoss,
-            shelterLoss,
-            armyLoss
         );
     }
 
     function _supportPressure(uint256 roundId) internal view returns (uint256) {
-        uint256 population = populationForRound(effectiveRoundForSupport(roundId));
-        return 1 + (population / POPULATION_UPKEEP_INTERVAL);
+        uint256 effectiveRound = effectiveRoundForSupport(roundId);
+        return 2 + (effectiveRound / POPULATION_UPKEEP_INTERVAL);
     }
 
     function _reduceFood(uint256 amount) internal returns (uint256) {
