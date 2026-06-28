@@ -8,60 +8,37 @@ async function deployContract(name, args = []) {
   return contract;
 }
 
-async function deployLocal() {
-  const [deployer] = await ethers.getSigners();
-  const premiumDeposit = ethers.utils.parseEther("0.5");
-  const minimumProvide = ethers.utils.parseEther("0.5");
-  const minimumReserve = ethers.utils.parseEther("2");
-  const maxClaim = ethers.utils.parseEther("16");
-
-  const wethToken = await deployContract("TestToken");
-  const aWethToken = await deployContract("aTestToken");
-  const poolMock = await deployContract("PoolMock");
-  await (await poolMock.setTestTokens(wethToken.address, aWethToken.address)).wait();
-
-  const poolAddressesProviderMock = await deployContract("PoolAddressesProviderMock");
-  await (await poolAddressesProviderMock.setPoolImpl(poolMock.address)).wait();
-
-  const lendingPoolAddressesProviderMock = await deployContract("LendingPoolAddressesProviderMock", [
-    poolMock.address,
-  ]);
-  const protocolDataProviderMock = await deployContract("ProtocolDataProviderMock", [
-    aWethToken.address,
-  ]);
-  const oracleMock = await deployContract("OracleMock", [deployer.address]);
-  const wethGateway = await deployContract("WethGatewayTest");
-  await (await wethGateway.setValues(wethToken.address, aWethToken.address)).wait();
-
-  const oracleGateway = await deployContract("OracleGateway", [deployer.address, oracleMock.address]);
-  const premiumGenerator = await deployContract("PremiumGeneratorAaveV2", [
-    lendingPoolAddressesProviderMock.address,
-    protocolDataProviderMock.address,
-    deployer.address,
-    wethGateway.address,
-    premiumDeposit,
-  ]);
-
-  const reserve = await deployContract("Reserve", [
-    deployer.address,
-    premiumGenerator.address,
-    wethGateway.address,
-    minimumProvide,
-    minimumReserve,
-    maxClaim,
-    oracleMock.address,
-    oracleGateway.address,
-  ]);
-
-  await (await oracleMock.setReserve(reserve.address)).wait();
-  await (await premiumGenerator.setReserve(reserve.address)).wait();
-  await (await oracleGateway.setReserve(reserve.address)).wait();
-
-  console.log(`Deployed local stack on ${network.name}`);
-}
-
 async function main() {
-  await deployLocal();
+  const tournamentId = process.env.TOURNAMENT_ID || "1";
+  const entryDeposit = process.env.ENTRY_DEPOSIT_ETH
+    ? ethers.utils.parseEther(process.env.ENTRY_DEPOSIT_ETH)
+    : ethers.utils.parseEther("1");
+
+  const yieldAdapter = await deployContract("NoYieldAdapter");
+  const landLordImplementation = await deployContract("LandLord");
+
+  const tournament = await deployContract("TournamentManager", [
+    yieldAdapter.address,
+    landLordImplementation.address,
+    tournamentId,
+    entryDeposit,
+  ]);
+  await (await yieldAdapter.setController(tournament.address)).wait();
+
+  const battleManager = await deployContract("BattleManager", [
+    tournament.address,
+    tournamentId,
+  ]);
+  await (await tournament.setBattleManager(battleManager.address)).wait();
+
+  if (network.name === "hardhat" || network.name === "localhost") {
+    const vrfProvider = await deployContract("VRFProviderMock", [
+      tournament.address,
+    ]);
+    await (await tournament.setVrfProvider(vrfProvider.address)).wait();
+  }
+
+  console.log(`Deployed tournament stack on ${network.name}`);
 }
 
 main().catch((error) => {

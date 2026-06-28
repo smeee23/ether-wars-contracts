@@ -15,13 +15,12 @@ interface ITournamentBattleManager {
 
     function startNextRound() external returns (uint256);
     function setRoundRandomness(uint256 roundId, uint256 randomness) external;
-    function resolveBattle(address attacker, address defender) external;
     function resolveTableConflicts(uint256 tableId, uint256 roundId) external;
     function currentRound() external view returns (uint256);
     function getPhase() external view returns (Phase);
     function canEndRound() external view returns (bool);
     function getRoundRandomness(uint256 roundId) external view returns (uint256);
-    function didBuild(uint256 roundId, address player) external view returns (bool);
+    function commits(uint256 roundId, address player) external view returns (bytes32);
 }
 
 interface ITournamentVRFProvider {
@@ -45,6 +44,9 @@ contract TournamentManager is ReentrancyGuard {
     uint256 public constant STARTING_OXYGEN = 0;
     uint256 public constant STARTING_SHELTER = 0;
     uint256 public constant STARTING_ARMY = 0;
+    uint256 public constant BASIS_POINTS = 10_000;
+    uint256 public constant ARMY_BONUS_BPS_STEP = 500;
+    uint256 public constant MAX_ARMY_BONUS = 20;
 
     enum TournamentState {
         Registration,
@@ -55,7 +57,6 @@ contract TournamentManager is ReentrancyGuard {
     struct PlayerInfo {
         bool registered;
         bool active;
-        address landLord;
         uint256 deposited;
         uint256 adapterShares;
         bool principalClaimed;
@@ -105,7 +106,7 @@ contract TournamentManager is ReentrancyGuard {
     mapping(uint256 => mapping(uint256 => address[])) private roundTablePlayers;
     mapping(uint256 => uint256) public vrfRequestToRound;
 
-    event PlayerRegistered(address indexed player, address indexed landLord);
+    event PlayerRegistered(address indexed player);
     event ColonyCreated(
         uint256 indexed colonyId,
         address indexed owner,
@@ -133,13 +134,6 @@ contract TournamentManager is ReentrancyGuard {
     event RoundEnded(uint256 indexed roundId);
     event RoundRandomnessApproved(uint256 indexed roundId, uint256 randomness);
     event PlayerEliminated(address indexed player);
-    event BattleSettled(
-        address indexed attacker,
-        address indexed defender,
-        bool attackerWon,
-        uint256 wager,
-        uint256 goldTransferred
-    );
     event ConflictGoldSettled(
         uint256 indexed roundId,
         address indexed winner,
@@ -249,13 +243,11 @@ contract TournamentManager is ReentrancyGuard {
         totalPrincipal += msg.value;
         totalAdapterShares += shares;
 
-        uint256 colonyId = _createColony(msg.sender);
-        address landLordAddress = colonyInfo[colonyId].landLord;
+        _createColony(msg.sender);
 
         playerInfo[msg.sender] = PlayerInfo({
             registered: true,
             active: true,
-            landLord: landLordAddress,
             deposited: msg.value,
             adapterShares: shares,
             principalClaimed: false,
@@ -265,7 +257,7 @@ contract TournamentManager is ReentrancyGuard {
         activePlayers++;
         _assignToOpenTable(msg.sender);
 
-        emit PlayerRegistered(msg.sender, landLordAddress);
+        emit PlayerRegistered(msg.sender);
         emit DepositedToYieldAdapter(msg.sender, msg.value, shares);
     }
 
@@ -286,6 +278,19 @@ contract TournamentManager is ReentrancyGuard {
         returns (uint256 colonyId)
     {
         require(playerInfo[msg.sender].active, "player inactive");
+        require(battleManager != address(0), "battle manager not set");
+        require(
+            ITournamentBattleManager(battleManager).getPhase() ==
+                ITournamentBattleManager.Phase.Commit,
+            "not commit phase"
+        );
+        require(
+            ITournamentBattleManager(battleManager).commits(
+                ITournamentBattleManager(battleManager).currentRound(),
+                msg.sender
+            ) == bytes32(0),
+            "already committed"
+        );
         require(expansionsUsed[msg.sender] < maxUnlockedExpansions(), "expansion locked");
 
         expansionsUsed[msg.sender]++;
@@ -351,7 +356,7 @@ contract TournamentManager is ReentrancyGuard {
         lastEndedRound = roundId;
         emit RoundEnded(roundId);
 
-        _applyRoundDecay(roundId);
+        _applyRoundSupportChecks(roundId);
 
         if (activePlayers <= 1) {
             _completeTournament();
@@ -379,47 +384,6 @@ contract TournamentManager is ReentrancyGuard {
 
     function eliminatePlayer(address player) external onlyBattleManager {
         _eliminatePlayer(player);
-    }
-
-    function settleBattle(
-        address attacker,
-        address defender,
-        uint256 wager,
-        bool attackerWon
-    ) external onlyBattleManager returns (uint256 transferred) {
-        require(wager > 0, "invalid wager");
-        require(playerInfo[attacker].active, "attacker inactive");
-        require(playerInfo[defender].active, "defender inactive");
-
-        uint256 attackerColonyId = _firstActiveColony(attacker);
-        uint256 defenderColonyId = _firstActiveColony(defender);
-        require(attackerColonyId != 0, "missing attacker colony");
-        require(defenderColonyId != 0, "missing defender colony");
-
-        address attackerLandLord = colonyInfo[attackerColonyId].landLord;
-        address defenderLandLord = colonyInfo[defenderColonyId].landLord;
-
-        if (attackerWon) {
-            transferred = LandLord(defenderLandLord).transferGoldToWinner(
-                attackerLandLord,
-                wager
-            );
-            LandLord(attackerLandLord).awardGold(transferred);
-            if (LandLord(defenderLandLord).isEliminatedByResources()) {
-                _eliminateColony(defenderColonyId);
-            }
-        } else {
-            transferred = LandLord(attackerLandLord).transferGoldToWinner(
-                defenderLandLord,
-                wager
-            );
-            LandLord(defenderLandLord).awardGold(transferred);
-            if (LandLord(attackerLandLord).isEliminatedByResources()) {
-                _eliminateColony(attackerColonyId);
-            }
-        }
-
-        emit BattleSettled(attacker, defender, attackerWon, wager, transferred);
     }
 
     function settleConflictGroup(
@@ -462,8 +426,15 @@ contract TournamentManager is ReentrancyGuard {
         require(playerInfo[player].active, "player inactive");
         require(_ownsActiveColony(player, colonyId), "invalid colony");
 
-        LandLord(colonyInfo[colonyId].landLord).applyBuildAction();
-        emit BuildActionApplied(player, colonyId, colonyInfo[colonyId].landLord);
+        uint256[] memory colonies = playerColonies[player];
+        for (uint256 i = 0; i < colonies.length; i++) {
+            uint256 activeColonyId = colonies[i];
+            ColonyInfo memory colony = colonyInfo[activeColonyId];
+            if (!colony.active) continue;
+
+            LandLord(colony.landLord).applyBuildAction();
+            emit BuildActionApplied(player, activeColonyId, colony.landLord);
+        }
     }
 
     function _settleConflictLoser(
@@ -478,7 +449,7 @@ contract TournamentManager is ReentrancyGuard {
         require(loserColonyId != 0, "missing loser colony");
 
         transferred = LandLord(colonyInfo[loserColonyId].landLord)
-            .transferGoldToWinner(winnerLandLord, groupStake);
+            .transferGoldTo(winnerLandLord, groupStake);
         if (transferred > 0) {
             LandLord(winnerLandLord).awardGold(transferred);
         }
@@ -500,14 +471,6 @@ contract TournamentManager is ReentrancyGuard {
             transferred,
             loserEliminated
         );
-    }
-
-    function resolveBattle(address attacker, address defender)
-        external
-        onlyAdmin
-        inState(TournamentState.Active)
-    {
-        ITournamentBattleManager(battleManager).resolveBattle(attacker, defender);
     }
 
     function resolveTableConflicts(uint256 tableId, uint256 roundId)
@@ -590,6 +553,30 @@ contract TournamentManager is ReentrancyGuard {
         return LandLord(colonyInfo[resolvedColonyId].landLord).getResources().army;
     }
 
+    function getActionArmyBonus(address player, uint256 colonyId)
+        external
+        view
+        returns (uint256)
+    {
+        uint256 resolvedColonyId = _resolveActionColony(player, colonyId);
+        if (resolvedColonyId == 0) return 0;
+
+        LandLord.Resources memory resources = LandLord(
+            colonyInfo[resolvedColonyId].landLord
+        ).getResources();
+        uint256 total = resources.gold +
+            resources.food +
+            resources.water +
+            resources.oxygen +
+            resources.shelter +
+            resources.army;
+        if (total == 0) return 0;
+
+        uint256 armyShareBps = (resources.army * BASIS_POINTS) / total;
+        uint256 armyBonus = armyShareBps / ARMY_BONUS_BPS_STEP;
+        return armyBonus > MAX_ARMY_BONUS ? MAX_ARMY_BONUS : armyBonus;
+    }
+
     function allocateColonyGold(
         uint256 colonyId,
         LandLord.ResourceType resource,
@@ -618,7 +605,7 @@ contract TournamentManager is ReentrancyGuard {
         );
 
         uint256 transferred = LandLord(colonyInfo[fromColonyId].landLord)
-            .transferGoldToWinner(colonyInfo[toColonyId].landLord, amount);
+            .transferGoldTo(colonyInfo[toColonyId].landLord, amount);
         LandLord(colonyInfo[toColonyId].landLord).awardGold(transferred);
 
         emit ColonyGoldTransferred(
@@ -826,22 +813,6 @@ contract TournamentManager is ReentrancyGuard {
         return true;
     }
 
-    function getAvailableResources(address player) public view returns (uint256) {
-        return getGold(player);
-    }
-
-    function getGold(address player) public view returns (uint256) {
-        uint256 colonyId = _firstActiveColony(player);
-        if (colonyId == 0) return 0;
-        return LandLord(colonyInfo[colonyId].landLord).getGold();
-    }
-
-    function getPlayerArmy(address player) external view returns (uint256) {
-        uint256 colonyId = _firstActiveColony(player);
-        if (colonyId == 0) return 0;
-        return LandLord(colonyInfo[colonyId].landLord).getResources().army;
-    }
-
     function _isSameTable(address a, address b) internal view returns (bool) {
         PlayerInfo memory aInfo = playerInfo[a];
         PlayerInfo memory bInfo = playerInfo[b];
@@ -880,7 +851,7 @@ contract TournamentManager is ReentrancyGuard {
         }
     }
 
-    function _applyRoundDecay(uint256 roundId) internal {
+    function _applyRoundSupportChecks(uint256 roundId) internal {
         for (uint256 i = 0; i < players.length; i++) {
             address player = players[i];
             if (!playerInfo[player].active) continue;

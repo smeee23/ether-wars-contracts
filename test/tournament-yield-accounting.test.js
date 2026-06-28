@@ -39,12 +39,14 @@ describe("TournamentManager ETH and yield accounting", function () {
     );
 
     const aliceInfo = await tournament.playerInfo(alice.address);
-    const aliceLandLord = LandLord.attach(aliceInfo.landLord);
+    const aliceColonies = await tournament.getPlayerColonies(alice.address);
+    const aliceColony = await tournament.colonyInfo(aliceColonies[0]);
+    const aliceLandLord = LandLord.attach(aliceColony.landLord);
     const aliceResources = await aliceLandLord.getResources();
 
     expect(aliceInfo.deposited.toString()).to.equal(entryDeposit.toString());
     expect(aliceInfo.adapterShares.toString()).to.equal(entryDeposit.toString());
-    expect(aliceResources.oxygen.toString()).to.equal("100");
+    expect(aliceResources.oxygen.toString()).to.equal("0");
 
     await tournament.startTournament();
     await tournament.connect(admin).completeTournament();

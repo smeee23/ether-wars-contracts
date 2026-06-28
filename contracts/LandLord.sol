@@ -5,7 +5,7 @@ import "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 
 /**
  * @title LandLord
- * @notice Tournament resource state for one player.
+ * @notice Tournament resource state for one colony.
  * @dev This contract intentionally has no Aave, ETH, aToken, or vault logic.
  *      Gold and the other resources are virtual tournament accounting. Buildings
  *      and tiles are UI abstractions and are intentionally not tracked here.
@@ -48,7 +48,7 @@ contract LandLord is Initializable {
     event Initialized(address indexed lord, address indexed controller);
     event GoldSpent(uint256 amount);
     event GoldAwarded(uint256 amount);
-    event GoldTransferred(address indexed winnerLandLord, uint256 amount);
+    event GoldTransferred(address indexed toLandLord, uint256 amount);
     event ResourceAllocated(ResourceType indexed resource, uint256 goldSpent, uint256 amountAdded);
     event BuildSupportCreditStored(uint256 supportCredits);
     event SupportCheckApplied(
@@ -61,9 +61,6 @@ contract LandLord is Initializable {
         uint256 armyRequired,
         bool eliminated
     );
-    event BattleLossApplied(uint256 armyLost);
-    event AttackWagerSpent(uint256 amount);
-    event DefenseWagerSpent(uint256 amount);
 
     modifier onlyLord() {
         require(msg.sender == lord, "not lord");
@@ -101,22 +98,6 @@ contract LandLord is Initializable {
         _allocateGold(resource, goldAmount);
     }
 
-    /// @dev Deprecated compatibility wrapper. Allocation is now 1:1 gold to resource.
-    function spendGoldToReplenish(ResourceType resource, uint256 goldAmount)
-        external
-        onlyLord
-    {
-        _allocateGold(resource, goldAmount);
-    }
-
-    /// @dev Deprecated compatibility wrapper. Allocation is now 1:1 gold to resource.
-    function replenishResource(ResourceType resource, uint256 goldAmount)
-        external
-        onlyLord
-    {
-        _allocateGold(resource, goldAmount);
-    }
-
     function applyRoundUpkeep(address player, uint256 roundId)
         external
         onlyController
@@ -126,52 +107,10 @@ contract LandLord is Initializable {
         eliminated = _applyRoundUpkeep(roundId);
     }
 
-    function applyRoundUpkeepWithDecaySkip(
-        address player,
-        uint256 roundId,
-        bool skipDecay
-    )
-        external
-        onlyController
-        returns (bool eliminated)
-    {
-        require(player == lord, "wrong player");
-        // Deprecated compatibility parameter: BUILD now affects effective support round.
-        skipDecay;
-        eliminated = _applyRoundUpkeep(roundId);
-    }
-
-    function applyRoundDecay(uint256 roundNumber)
-        external
-        onlyController
-        returns (bool eliminated)
-    {
-        eliminated = _applyRoundUpkeep(roundNumber);
-    }
-
     function applyBuildAction() external onlyController {
         supportCredits += 1;
 
         emit BuildSupportCreditStored(supportCredits);
-    }
-
-    function applyBattleLoss(uint256 armyLoss, uint256 populationLoss)
-        external
-        onlyController
-    {
-        populationLoss;
-        uint256 actualArmyLoss = _reduceArmy(armyLoss);
-        emit BattleLossApplied(actualArmyLoss);
-    }
-
-    function spendAttackWager(uint256 amount) external onlyController {
-        _spendGold(amount);
-        emit AttackWagerSpent(amount);
-    }
-
-    function spendDefenseWager(uint256 amount) external onlyController {
-        _spendGold(amount);
-        emit DefenseWagerSpent(amount);
     }
 
     function spendGold(uint256 amount) external onlyController {
@@ -183,17 +122,17 @@ contract LandLord is Initializable {
         emit GoldAwarded(amount);
     }
 
-    function transferGoldToWinner(address winnerLandLord, uint256 amount)
+    function transferGoldTo(address toLandLord, uint256 amount)
         external
         onlyController
         returns (uint256 transferred)
     {
-        require(winnerLandLord != address(0), "invalid winner");
+        require(toLandLord != address(0), "invalid recipient");
 
         transferred = amount > resources.gold ? resources.gold : amount;
         resources.gold -= transferred;
 
-        emit GoldTransferred(winnerLandLord, transferred);
+        emit GoldTransferred(toLandLord, transferred);
     }
 
     function getGold() external view returns (uint256) {
@@ -279,16 +218,8 @@ contract LandLord is Initializable {
         });
     }
 
-    function getCityStats() public view returns (ResourceStats memory) {
-        return getResourceStats(0);
-    }
-
     function getAttackPower() external view returns (uint256) {
         return resources.army;
-    }
-
-    function canAfford(uint256 goldAmount) external view returns (bool) {
-        return resources.gold >= goldAmount;
     }
 
     function _spendGold(uint256 amount) internal {
@@ -341,33 +272,4 @@ contract LandLord is Initializable {
         return 2 + (effectiveRound / POPULATION_UPKEEP_INTERVAL);
     }
 
-    function _reduceFood(uint256 amount) internal returns (uint256) {
-        uint256 loss = amount > resources.food ? resources.food : amount;
-        resources.food -= loss;
-        return loss;
-    }
-
-    function _reduceWater(uint256 amount) internal returns (uint256) {
-        uint256 loss = amount > resources.water ? resources.water : amount;
-        resources.water -= loss;
-        return loss;
-    }
-
-    function _reduceOxygen(uint256 amount) internal returns (uint256) {
-        uint256 loss = amount > resources.oxygen ? resources.oxygen : amount;
-        resources.oxygen -= loss;
-        return loss;
-    }
-
-    function _reduceArmy(uint256 amount) internal returns (uint256) {
-        uint256 loss = amount > resources.army ? resources.army : amount;
-        resources.army -= loss;
-        return loss;
-    }
-
-    function _reduceShelter(uint256 amount) internal returns (uint256) {
-        uint256 loss = amount > resources.shelter ? resources.shelter : amount;
-        resources.shelter -= loss;
-        return loss;
-    }
 }

@@ -15,13 +15,6 @@ interface IBattleTournamentManager {
         uint256 targetColonyId
     ) external view returns (bool);
 
-    function settleBattle(
-        address attacker,
-        address defender,
-        uint256 wager,
-        bool attackerWon
-    ) external returns (uint256 transferred);
-
     function settleConflictGroup(
         uint256 roundId,
         address winner,
@@ -43,7 +36,7 @@ interface IBattleTournamentManager {
         view
         returns (uint256);
 
-    function getActionArmy(address player, uint256 colonyId) external view returns (uint256);
+    function getActionArmyBonus(address player, uint256 colonyId) external view returns (uint256);
 }
 
 /**
@@ -62,7 +55,7 @@ contract BattleManager is ReentrancyGuard {
     uint256 public constant ATTACK_VS_BUILD_BONUS = 25;
     uint256 public constant ATTACK_VS_DEFEND_PENALTY = 15;
     uint256 public constant DEFEND_BONUS = 20;
-    uint256 public constant ARMY_SCORE_DIVISOR = 10;
+    uint256 public constant MAX_ARMY_BONUS = 20;
 
     // =========================
     // ENUMS
@@ -82,7 +75,6 @@ contract BattleManager is ReentrancyGuard {
     }
 
     enum ActionType {
-        NONE,
         ATTACK,
         DEFEND,
         BUILD
@@ -98,12 +90,6 @@ contract BattleManager is ReentrancyGuard {
         uint256 amount; // gold wager for ATTACK; must be zero otherwise
         uint256 sourceColonyId;
         uint256 targetColonyId;
-    }
-
-    struct BestAttack {
-        address attacker;
-        uint256 wager;
-        bool resolved;
     }
 
     struct Round {
@@ -141,9 +127,6 @@ contract BattleManager is ReentrancyGuard {
     // track if revealed
     mapping(uint256 => mapping(address => bool)) public hasRevealed;
     mapping(uint256 => mapping(address => bool)) public hasAttacked;
-    // Deprecated: grouped conflict resolution keeps every valid attack instead
-    // of pruning to one highest-wager attack per defender.
-    mapping(uint256 => mapping(address => BestAttack)) public bestAttackByDefender;
     mapping(uint256 => mapping(uint256 => bool)) public tableConflictsResolved;
 
     // =========================
@@ -160,25 +143,6 @@ contract BattleManager is ReentrancyGuard {
         uint256 sourceColonyId,
         uint256 targetColonyId,
         uint256 wager
-    );
-    // Deprecated: grouped conflicts no longer outbid lower-wager attackers.
-    event AttackOutbid(
-        uint256 indexed roundId,
-        address indexed defender,
-        address indexed outbidAttacker,
-        address newLeader,
-        uint256 outbidWager,
-        uint256 newLeaderWager
-    );
-    // Deprecated: resolveBattle now resolves the attacker's whole round table.
-    event BattleResolved(
-        uint256 indexed roundId,
-        address indexed attacker,
-        address indexed defender,
-        bool attackerWon,
-        uint256 attackerWager,
-        uint256 attackerWinChance,
-        uint256 goldTransferred
     );
     event ConflictParticipant(
         uint256 indexed roundId,
@@ -271,13 +235,6 @@ contract BattleManager is ReentrancyGuard {
         return rounds[roundId].randomness;
     }
 
-    function didBuild(uint256 roundId, address player) external view returns (bool) {
-        return (
-            hasRevealed[roundId][player] &&
-            revealed[roundId][player].actionType == ActionType.BUILD
-        );
-    }
-
     // =========================
     // COMMIT
     // =========================
@@ -367,23 +324,6 @@ contract BattleManager is ReentrancyGuard {
     // RESOLVE (LAZY)
     // =========================
 
-    /// @dev Deprecated compatibility shim. Resolves every conflict in the
-    /// attacker's frozen round table instead of resolving one pairwise duel.
-    function resolveBattle(address attacker, address defender)
-        external
-        onlyTournamentManager
-        inPhase(Phase.Resolve)
-    {
-        Action memory atk = _getActionOrDefault(currentRound, attacker);
-        require(atk.actionType == ActionType.ATTACK, "attacker not attacking");
-        require(atk.target == defender, "wrong target");
-
-        uint256 tableId = IBattleTournamentManager(tournamentManager)
-            .getRoundTableOf(currentRound, attacker);
-        require(tableId != 0, "missing round table");
-        resolveTableConflicts(tableId, currentRound);
-    }
-
     function resolveTableConflicts(uint256 tableId, uint256 roundId)
         public
         onlyTournamentManager
@@ -413,6 +353,8 @@ contract BattleManager is ReentrancyGuard {
             if (visited[i]) continue;
             _resolveComponent(roundId, tableId, players, actions, visited, i);
         }
+
+        _applyUncontestedBuilds(players, actions);
     }
 
     // =========================
@@ -429,35 +371,19 @@ contract BattleManager is ReentrancyGuard {
             require(action.amount == 0, "build wager");
             require(action.sourceColonyId != 0, "build colony");
             require(action.targetColonyId == 0, "build target colony");
-            IBattleTournamentManager(tournamentManager).applyBuildAction(
-                player,
-                action.sourceColonyId
-            );
-        } else {
-            require(action.target == address(0), "build target");
+        } else if (action.actionType == ActionType.DEFEND) {
+            require(action.target == address(0), "defend target");
             require(action.amount == 0, "non-attack wager");
-            require(action.sourceColonyId != 0, "defend colony");
+            require(action.sourceColonyId == 0, "defend source colony");
             require(action.targetColonyId == 0, "defend target colony");
+        } else {
+            revert("invalid action");
         }
 
         revealed[currentRound][player] = action;
         hasRevealed[currentRound][player] = true;
 
         emit Revealed(player, currentRound);
-    }
-
-    function _attackerWinChance(uint256 roundId, address defender)
-        internal
-        view
-        returns (uint256)
-    {
-        Action memory defenderAction = _getActionOrDefault(roundId, defender);
-
-        if (defenderAction.actionType == ActionType.BUILD) return 65;
-        if (defenderAction.actionType == ActionType.DEFEND) return 35;
-        if (defenderAction.actionType == ActionType.ATTACK) return 50;
-
-        return 35;
     }
 
     function _recordAttackReveal(address attacker, Action calldata action)
@@ -486,28 +412,6 @@ contract BattleManager is ReentrancyGuard {
             action.targetColonyId,
             action.amount
         );
-    }
-
-    function _winsTie(
-        address challenger,
-        address incumbent,
-        address defender
-    ) internal view returns (bool) {
-        uint256 randomness = rounds[currentRound].randomness;
-        bytes32 tieSeed;
-
-        if (randomness != 0) {
-            tieSeed = keccak256(
-                abi.encode(randomness, currentRound, challenger, incumbent, defender)
-            );
-        } else {
-            // Fallback is deterministic if VRF has not arrived by reveal time.
-            tieSeed = keccak256(
-                abi.encode(currentRound, challenger, incumbent, defender)
-            );
-        }
-
-        return uint256(tieSeed) % 2 == 1;
     }
 
     function _resolveComponent(
@@ -680,14 +584,22 @@ contract BattleManager is ReentrancyGuard {
                 )
             ) % RANDOM_SCORE_RANGE
         );
-        uint256 army = IBattleTournamentManager(tournamentManager).getActionArmy(
+        uint256 armyColonyId = action.sourceColonyId;
+        if (
+            action.actionType == ActionType.DEFEND ||
+            action.actionType == ActionType.BUILD
+        ) {
+            uint256 incomingTargetColonyId = _incomingTargetColonyFor(ctx, player);
+            if (incomingTargetColonyId != 0) {
+                armyColonyId = incomingTargetColonyId;
+            }
+        }
+        score += IBattleTournamentManager(tournamentManager).getActionArmyBonus(
             player,
-            action.sourceColonyId
+            armyColonyId
         );
-        score += army / ARMY_SCORE_DIVISOR;
 
         if (action.actionType == ActionType.ATTACK) {
-            score += action.amount;
             uint256 targetIndex = _indexOf(ctx.tablePlayers, action.target);
             if (targetIndex < ctx.tablePlayers.length) {
                 if (ctx.actions[targetIndex].actionType == ActionType.BUILD) {
@@ -727,6 +639,38 @@ contract BattleManager is ReentrancyGuard {
         }
     }
 
+    function _applyUncontestedBuilds(
+        address[] memory tablePlayers,
+        Action[] memory actions
+    ) internal {
+        for (uint256 i = 0; i < tablePlayers.length; i++) {
+            if (actions[i].actionType != ActionType.BUILD) continue;
+            if (_hasIncomingAttack(tablePlayers[i], tablePlayers, actions)) continue;
+
+            IBattleTournamentManager(tournamentManager).applyBuildAction(
+                tablePlayers[i],
+                actions[i].sourceColonyId
+            );
+        }
+    }
+
+    function _hasIncomingAttack(
+        address player,
+        address[] memory tablePlayers,
+        Action[] memory actions
+    ) internal pure returns (bool) {
+        for (uint256 i = 0; i < tablePlayers.length; i++) {
+            if (
+                actions[i].actionType == ActionType.ATTACK &&
+                actions[i].target == player
+            ) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     function _hasAttackEdge(Action memory action, address target)
         internal
         pure
@@ -744,17 +688,42 @@ contract BattleManager is ReentrancyGuard {
         if (action.actionType == ActionType.ATTACK) return action.sourceColonyId;
 
         address player = ctx.tablePlayers[playerIndex];
+        uint256 selectedColonyId = _incomingTargetColonyFor(ctx, player);
+        if (selectedColonyId != 0) return selectedColonyId;
+
+        return action.sourceColonyId;
+    }
+
+    function _incomingTargetColonyFor(ConflictContext memory ctx, address player)
+        internal
+        pure
+        returns (uint256 selectedColonyId)
+    {
+        uint256 selectedWager;
+
         for (uint256 i = 0; i < ctx.tablePlayers.length; i++) {
             if (
                 ctx.inGroup[i] &&
                 ctx.actions[i].actionType == ActionType.ATTACK &&
                 ctx.actions[i].target == player
             ) {
-                return ctx.actions[i].targetColonyId;
+                uint256 attackWager = ctx.actions[i].amount;
+                uint256 targetColonyId = ctx.actions[i].targetColonyId;
+                if (
+                    attackWager > selectedWager ||
+                    (
+                        attackWager == selectedWager &&
+                        (
+                            selectedColonyId == 0 ||
+                            targetColonyId < selectedColonyId
+                        )
+                    )
+                ) {
+                    selectedWager = attackWager;
+                    selectedColonyId = targetColonyId;
+                }
             }
         }
-
-        return action.sourceColonyId;
     }
 
     function _indexOf(address[] memory players, address player)

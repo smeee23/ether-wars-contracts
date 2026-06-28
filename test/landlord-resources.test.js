@@ -65,7 +65,7 @@ describe("LandLord resource model", function () {
     expect(resources.army.toString()).to.equal("31");
   });
 
-  it("keeps deprecated replenish wrappers on 1:1 allocation semantics", async function () {
+  it("does not expose deprecated replenish wrappers", async function () {
     const { landLord, lord } = await deployLandLord({
       gold: 20,
       food: 1,
@@ -75,11 +75,13 @@ describe("LandLord resource model", function () {
       army: 1,
     });
 
-    await landLord.connect(lord).spendGoldToReplenish(FOOD, 2);
+    await landLord.connect(lord).allocateGold(FOOD, 2);
 
     const resources = await landLord.getResources();
     expect(resources.gold.toString()).to.equal("18");
     expect(resources.food.toString()).to.equal("3");
+    expect(landLord.spendGoldToReplenish).to.equal(undefined);
+    expect(landLord.replenishResource).to.equal(undefined);
   });
 
   it("derives population from round number and checks support without draining resources", async function () {
@@ -162,6 +164,7 @@ describe("LandLord resource model", function () {
     expect(stats.attackPower.toString()).to.equal("20");
     expect(stats.defensePower).to.equal(undefined);
     expect(landLord.getDefensePower).to.equal(undefined);
+    expect(landLord.getCityStats).to.equal(undefined);
   });
 
   it("flags support elimination when oxygen is below the required threshold", async function () {

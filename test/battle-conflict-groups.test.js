@@ -1,13 +1,15 @@
 const { expect } = require("chai");
 const { ethers, network } = require("hardhat");
 
-const ATTACK = 1;
-const DEFEND = 2;
-const BUILD = 3;
+const ATTACK = 0;
+const DEFEND = 1;
+const BUILD = 2;
 const BASE_SCORE = 100;
 const DEFEND_BONUS = 20;
 const ATTACK_VS_DEFEND_PENALTY = 15;
-const ARMY_SCORE_DIVISOR = 10;
+const BASIS_POINTS = 10000;
+const ARMY_BONUS_BPS_STEP = 500;
+const MAX_ARMY_BONUS = 20;
 const COMMIT_DURATION = 4 * 60 * 60;
 const REVEAL_DURATION = 2 * 60 * 60;
 
@@ -131,7 +133,10 @@ describe("BattleManager connected conflict groups", function () {
   }
 
   async function normalizeAction(ctx, player, action) {
-    if (action.sourceColonyId === undefined || action.sourceColonyId === 0) {
+    if (
+      action.actionType !== DEFEND &&
+      (action.sourceColonyId === undefined || action.sourceColonyId === 0)
+    ) {
       action.sourceColonyId = await firstColonyOf(ctx, player);
     }
     if (action.actionType === ATTACK) {
@@ -140,6 +145,9 @@ describe("BattleManager connected conflict groups", function () {
       }
     } else {
       action.targetColonyId = 0;
+    }
+    if (action.actionType === DEFEND) {
+      action.sourceColonyId = 0;
     }
   }
 
@@ -172,6 +180,21 @@ describe("BattleManager connected conflict groups", function () {
       .toNumber();
   }
 
+  function armyBonus(resources) {
+    const total = ["gold", "food", "water", "oxygen", "shelter", "army"]
+      .map((key) => resources[key].toNumber())
+      .reduce((sum, value) => sum + value, 0);
+    if (total === 0) return 0;
+
+    const armyShareBps = Math.floor(
+      (resources.army.toNumber() * BASIS_POINTS) / total
+    );
+    return Math.min(
+      Math.floor(armyShareBps / ARMY_BONUS_BPS_STEP),
+      MAX_ARMY_BONUS
+    );
+  }
+
   function defenderWinningSeed(roundId, tableId, attacker, defender) {
     const hash = groupHash(roundId, tableId, [attacker, defender]);
     for (let seed = 1; seed < 1000; seed++) {
@@ -193,6 +216,20 @@ describe("BattleManager connected conflict groups", function () {
     throw new Error("no attacker-winning seed found");
   }
 
+  function winnerSeed(roundId, tableId, players, baseScores, winnerIndex) {
+    const hash = groupHash(roundId, tableId, players);
+    for (let seed = 1; seed < 1000; seed++) {
+      const scores = players.map((player, index) => (
+        baseScores[index] + roll(seed, roundId, tableId, hash, player)
+      ));
+      const winnerScore = scores[winnerIndex];
+      if (scores.every((score, index) => index === winnerIndex || winnerScore > score)) {
+        return seed;
+      }
+    }
+    throw new Error("no winning seed found");
+  }
+
   async function landLordOf(ctx, player) {
     const colonyId = await firstColonyOf(ctx, player);
     const colony = await ctx.tournament.colonyInfo(colonyId);
@@ -207,6 +244,16 @@ describe("BattleManager connected conflict groups", function () {
   function build() {
     return {
       actionType: BUILD,
+      target: ethers.constants.AddressZero,
+      amount: 0,
+      sourceColonyId: 0,
+      targetColonyId: 0,
+    };
+  }
+
+  function defend() {
+    return {
+      actionType: DEFEND,
       target: ethers.constants.AddressZero,
       amount: 0,
       sourceColonyId: 0,
@@ -294,10 +341,70 @@ describe("BattleManager connected conflict groups", function () {
     expect(attackers).to.have.members([a.address, c.address]);
   });
 
+  it("charges a losing non-attacker from the colony targeted by the largest incoming wager", async function () {
+    const ctx = await deployGame(3);
+    const [a, b, c] = ctx.players;
+    const seed = winnerSeed(1, 1, [a, b, c], [85, 120, 85], 0);
+    const roundId = await startRound(ctx, seed);
+    await ctx.tournament.connect(b).expand();
+
+    const bColonies = await ctx.tournament.getPlayerColonies(b.address);
+    const first = bColonies[0].toNumber();
+    const second = bColonies[1].toNumber();
+
+    const aAction = attack(b.address, 100);
+    aAction.targetColonyId = first;
+    const cAction = attack(b.address, 50);
+    cAction.targetColonyId = second;
+    const aSalt = await commitAction(ctx, a, roundId, aAction, "a");
+    const cSalt = await commitAction(ctx, c, roundId, cAction, "c");
+
+    await revealPhase();
+    await revealAction(ctx, a, aAction, aSalt);
+    await revealAction(ctx, c, cAction, cSalt);
+    await resolvePhase();
+    await resolveTable(ctx, roundId);
+
+    const firstLandLord = await landLordOfColony(ctx, first);
+    const secondLandLord = await landLordOfColony(ctx, second);
+    expect((await firstLandLord.getGold()).toString()).to.equal("900");
+    expect((await secondLandLord.getGold()).toString()).to.equal("1000");
+  });
+
+  it("breaks equal incoming target-colony wagers by lower colony id", async function () {
+    const ctx = await deployGame(3);
+    const [a, b, c] = ctx.players;
+    const seed = winnerSeed(1, 1, [a, b, c], [85, 120, 85], 0);
+    const roundId = await startRound(ctx, seed);
+    await ctx.tournament.connect(b).expand();
+
+    const bColonies = await ctx.tournament.getPlayerColonies(b.address);
+    const first = bColonies[0].toNumber();
+    const second = bColonies[1].toNumber();
+
+    const aAction = attack(b.address, 100);
+    aAction.targetColonyId = first;
+    const cAction = attack(b.address, 100);
+    cAction.targetColonyId = second;
+    const aSalt = await commitAction(ctx, a, roundId, aAction, "a");
+    const cSalt = await commitAction(ctx, c, roundId, cAction, "c");
+
+    await revealPhase();
+    await revealAction(ctx, a, aAction, aSalt);
+    await revealAction(ctx, c, cAction, cSalt);
+    await resolvePhase();
+    await resolveTable(ctx, roundId);
+
+    const firstLandLord = await landLordOfColony(ctx, first);
+    const secondLandLord = await landLordOfColony(ctx, second);
+    expect((await firstLandLord.getGold()).toString()).to.equal("900");
+    expect((await secondLandLord.getGold()).toString()).to.equal("1000");
+  });
+
   it("charges a losing BUILD participant the groupStake", async function () {
     const ctx = await deployGame(2);
     const [a, b] = ctx.players;
-    const seed = attackerWinningSeed(1, 1, a, b, 145, 100);
+    const seed = attackerWinningSeed(1, 1, a, b, 125, 100);
     const roundId = await startRound(ctx, seed);
 
     const aAction = attack(b.address, 20);
@@ -313,40 +420,99 @@ describe("BattleManager connected conflict groups", function () {
 
     const aLandLord = await landLordOf(ctx, a);
     const bLandLord = await landLordOf(ctx, b);
-    expect((await aLandLord.getGold()).toString()).to.equal("120");
-    expect((await bLandLord.getGold()).toString()).to.equal("80");
+    expect((await aLandLord.getGold()).toString()).to.equal("1020");
+    expect((await bLandLord.getGold()).toString()).to.equal("980");
+    expect((await bLandLord.supportCredits()).toString()).to.equal("0");
   });
 
-  it("stores BUILD support credit without resource gains or decay skips", async function () {
+  it("stores uncontested BUILD support credit for every active colony during table resolution", async function () {
     const ctx = await deployGame(2);
     const [a, b] = ctx.players;
     const roundId = await startRound(ctx);
+    await ctx.tournament.connect(b).expand();
+    const bColonies = await ctx.tournament.getPlayerColonies(b.address);
 
     const bAction = build();
     const bSalt = await commitAction(ctx, b, roundId, bAction, "b");
 
     await revealPhase();
     await revealAction(ctx, b, bAction, bSalt);
+    const firstLandLord = await landLordOfColony(ctx, bColonies[0].toNumber());
+    const secondLandLord = await landLordOfColony(ctx, bColonies[1].toNumber());
+    expect((await firstLandLord.supportCredits()).toString()).to.equal("0");
+    expect((await secondLandLord.supportCredits()).toString()).to.equal("0");
+
     await resolvePhase();
+    await resolveTable(ctx, roundId);
     await ctx.tournament.endBattleRound();
 
     const aLandLord = await landLordOf(ctx, a);
-    const bLandLord = await landLordOf(ctx, b);
     const aResources = await aLandLord.getResources();
-    const bResources = await bLandLord.getResources();
+    const firstResources = await firstLandLord.getResources();
+    const secondResources = await secondLandLord.getResources();
 
-    expect(aResources.food.toString()).to.equal("100");
-    expect(aResources.water.toString()).to.equal("100");
-    expect(aResources.oxygen.toString()).to.equal("100");
-    expect(aResources.shelter.toString()).to.equal("100");
-    expect(aResources.army.toString()).to.equal("40");
-    expect(bResources.food.toString()).to.equal("100");
-    expect(bResources.water.toString()).to.equal("100");
-    expect(bResources.oxygen.toString()).to.equal("100");
-    expect(bResources.shelter.toString()).to.equal("100");
-    expect(bResources.army.toString()).to.equal("40");
-    expect((await bLandLord.supportCredits()).toString()).to.equal("1");
-    expect((await bLandLord.effectiveRoundForSupport(roundId)).toString()).to.equal("0");
+    expect(aResources.food.toString()).to.equal("0");
+    expect(aResources.water.toString()).to.equal("0");
+    expect(aResources.oxygen.toString()).to.equal("0");
+    expect(aResources.shelter.toString()).to.equal("0");
+    expect(aResources.army.toString()).to.equal("0");
+    expect(firstResources.food.toString()).to.equal("0");
+    expect(firstResources.water.toString()).to.equal("0");
+    expect(firstResources.oxygen.toString()).to.equal("0");
+    expect(firstResources.shelter.toString()).to.equal("0");
+    expect(firstResources.army.toString()).to.equal("0");
+    expect(secondResources.food.toString()).to.equal("0");
+    expect(secondResources.water.toString()).to.equal("0");
+    expect(secondResources.oxygen.toString()).to.equal("0");
+    expect(secondResources.shelter.toString()).to.equal("0");
+    expect(secondResources.army.toString()).to.equal("0");
+    expect((await firstLandLord.supportCredits()).toString()).to.equal("1");
+    expect((await secondLandLord.supportCredits()).toString()).to.equal("1");
+    expect((await firstLandLord.effectiveRoundForSupport(roundId)).toString()).to.equal("0");
+    expect((await secondLandLord.effectiveRoundForSupport(roundId)).toString()).to.equal("0");
+  });
+
+  it("scores BUILD army from the attacked colony without storing credit when attacked", async function () {
+    const ctx = await deployGame(2);
+    const [a, b] = ctx.players;
+    const randomness = 12345;
+    const roundId = await startRound(ctx, randomness);
+    await ctx.tournament.connect(b).expand();
+
+    const bColonies = await ctx.tournament.getPlayerColonies(b.address);
+    const buildColony = bColonies[0].toNumber();
+    const attackedColony = bColonies[1].toNumber();
+    await ctx.tournament.connect(b).allocateColonyGold(attackedColony, 4, 30);
+
+    const aAction = attack(b.address, 10);
+    aAction.targetColonyId = attackedColony;
+    const bAction = build();
+    bAction.sourceColonyId = buildColony;
+    const aSalt = await commitAction(ctx, a, roundId, aAction, "a");
+    const bSalt = await commitAction(ctx, b, roundId, bAction, "b");
+
+    await revealPhase();
+    await revealAction(ctx, a, aAction, aSalt);
+    await revealAction(ctx, b, bAction, bSalt);
+    await resolvePhase();
+
+    const tx = await ctx.tournament.resolveTableConflicts(1, roundId);
+    const receipt = await tx.wait();
+    const participants = await participantEvents(ctx, receipt);
+    const bEvent = participants.find((event) => event.args.player === b.address);
+    const hash = groupHash(roundId, 1, [a, b]);
+    const attackedLandLord = await landLordOfColony(ctx, attackedColony);
+    const attackedResources = await attackedLandLord.getResources();
+    const expectedScore =
+      BASE_SCORE +
+      roll(randomness, roundId, 1, hash, b) +
+      armyBonus(attackedResources);
+
+    const buildLandLord = await landLordOfColony(ctx, buildColony);
+    expect((await buildLandLord.supportCredits()).toString()).to.equal("0");
+    expect((await attackedLandLord.supportCredits()).toString()).to.equal("0");
+    expect(bEvent.args.score.toString()).to.equal(expectedScore.toString());
+    expect(bEvent.args.sourceColonyId.toString()).to.equal(buildColony.toString());
   });
 
   it("expands into an internal colony without changing table seats", async function () {
@@ -365,6 +531,34 @@ describe("BattleManager connected conflict groups", function () {
     expect((await ctx.tournament.activeColonyCount(a.address)).toString()).to.equal("2");
   });
 
+  it("allows expansion only during commit phase before the player commits", async function () {
+    const ctx = await deployGame(2);
+    const [a, b] = ctx.players;
+    const roundId = await startRound(ctx);
+
+    const aAction = build();
+    await commitAction(ctx, a, roundId, aAction, "a");
+
+    let reverted = false;
+    try {
+      await ctx.tournament.connect(a).expand();
+    } catch (error) {
+      reverted = error.message.includes("already committed");
+    }
+    expect(reverted).to.equal(true);
+
+    await ctx.tournament.connect(b).expand();
+
+    await revealPhase();
+    reverted = false;
+    try {
+      await ctx.tournament.connect(b).expand();
+    } catch (error) {
+      reverted = error.message.includes("not commit phase");
+    }
+    expect(reverted).to.equal(true);
+  });
+
   it("transfers gold between active colonies only during commit phase", async function () {
     const ctx = await deployGame(2);
     const [a] = ctx.players;
@@ -378,8 +572,8 @@ describe("BattleManager connected conflict groups", function () {
 
     const firstLandLord = await landLordOfColony(ctx, first);
     const secondLandLord = await landLordOfColony(ctx, second);
-    expect((await firstLandLord.getGold()).toString()).to.equal("75");
-    expect((await secondLandLord.getGold()).toString()).to.equal("125");
+    expect((await firstLandLord.getGold()).toString()).to.equal("975");
+    expect((await secondLandLord.getGold()).toString()).to.equal("1025");
 
     await revealPhase();
     let reverted = false;
@@ -394,14 +588,13 @@ describe("BattleManager connected conflict groups", function () {
   it("eliminates only the attacked colony while another colony keeps the player active", async function () {
     const ctx = await deployGame(2);
     const [a, b] = ctx.players;
-    const seed = attackerWinningSeed(1, 1, a, b, 120, 120);
+    const seed = attackerWinningSeed(1, 1, a, b, 85, 120);
     const roundId = await startRound(ctx, seed);
     await ctx.tournament.connect(b).expand();
 
     const bColonies = await ctx.tournament.getPlayerColonies(b.address);
     const attackedColony = bColonies[0].toNumber();
-    const bLandLord = await landLordOfColony(ctx, attackedColony);
-    await bLandLord.connect(b).spendGoldToReplenish(0, 90);
+    await ctx.tournament.connect(b).allocateColonyGold(attackedColony, 0, 990);
 
     const aAction = attack(b.address, 35);
     aAction.targetColonyId = attackedColony;
@@ -444,13 +637,12 @@ describe("BattleManager connected conflict groups", function () {
     const aEvent = participants.find((event) => event.args.player === a.address);
     const hash = groupHash(roundId, 1, [a, b]);
     const firstLandLord = await landLordOfColony(ctx, first);
-    const firstArmy = (await firstLandLord.getResources()).army.toNumber();
+    const firstResources = await firstLandLord.getResources();
     const expectedScore =
       BASE_SCORE +
       roll(randomness, roundId, 1, hash, a) +
-      Math.floor(firstArmy / ARMY_SCORE_DIVISOR) +
-      10 -
-      ATTACK_VS_DEFEND_PENALTY;
+      armyBonus(firstResources) +
+      -ATTACK_VS_DEFEND_PENALTY;
 
     expect(aEvent.args.score.toString()).to.equal(expectedScore.toString());
   });
@@ -459,7 +651,8 @@ describe("BattleManager connected conflict groups", function () {
     const ctx = await deployGame(2);
     const [a, b] = ctx.players;
     const aLandLord = await landLordOf(ctx, a);
-    await aLandLord.connect(a).spendGoldToReplenish(4, 5);
+    const aColonyId = await firstColonyOf(ctx, a);
+    await ctx.tournament.connect(a).allocateColonyGold(aColonyId, 4, 5);
 
     const randomness = 12345;
     const roundId = await startRound(ctx, randomness);
@@ -475,30 +668,40 @@ describe("BattleManager connected conflict groups", function () {
     const participants = await participantEvents(ctx, receipt);
     const aEvent = participants.find((event) => event.args.player === a.address);
     const hash = groupHash(roundId, 1, [a, b]);
-    const army = (await aLandLord.getResources()).army.toNumber();
+    const resources = await aLandLord.getResources();
     const expectedScore =
       BASE_SCORE +
       roll(randomness, roundId, 1, hash, a) +
-      Math.floor(army / ARMY_SCORE_DIVISOR) +
-      10 -
-      ATTACK_VS_DEFEND_PENALTY;
+      armyBonus(resources) +
+      -ATTACK_VS_DEFEND_PENALTY;
 
     expect(aEvent.args.score.toString()).to.equal(expectedScore.toString());
   });
 
-  it("gives DEFEND one flat bonus when attacked by multiple players", async function () {
+  it("scores DEFEND army from the colony targeted by the largest incoming wager", async function () {
     const ctx = await deployGame(3);
     const [a, b, c] = ctx.players;
     const randomness = 12345;
     const roundId = await startRound(ctx, randomness);
+    await ctx.tournament.connect(b).expand();
+
+    const bColonies = await ctx.tournament.getPlayerColonies(b.address);
+    const first = bColonies[0].toNumber();
+    const second = bColonies[1].toNumber();
+    await ctx.tournament.connect(b).allocateColonyGold(second, 4, 30);
 
     const aAction = attack(b.address, 10);
+    aAction.targetColonyId = first;
     const cAction = attack(b.address, 15);
+    cAction.targetColonyId = second;
+    const bAction = defend();
     const aSalt = await commitAction(ctx, a, roundId, aAction, "a");
     const cSalt = await commitAction(ctx, c, roundId, cAction, "c");
+    const bSalt = await commitAction(ctx, b, roundId, bAction, "b");
 
     await revealPhase();
     await revealAction(ctx, a, aAction, aSalt);
+    await revealAction(ctx, b, bAction, bSalt);
     await revealAction(ctx, c, cAction, cSalt);
     await resolvePhase();
 
@@ -506,22 +709,23 @@ describe("BattleManager connected conflict groups", function () {
     const receipt = await tx.wait();
     const participants = await participantEvents(ctx, receipt);
     const bEvent = participants.find((event) => event.args.player === b.address);
-    const bLandLord = await landLordOf(ctx, b);
+    const bLandLord = await landLordOfColony(ctx, second);
     const hash = groupHash(roundId, 1, [a, b, c]);
-    const army = (await bLandLord.getResources()).army.toNumber();
+    const resources = await bLandLord.getResources();
     const expectedScore =
       BASE_SCORE +
       roll(randomness, roundId, 1, hash, b) +
-      Math.floor(army / ARMY_SCORE_DIVISOR) +
+      armyBonus(resources) +
       DEFEND_BONUS;
 
     expect(bEvent.args.score.toString()).to.equal(expectedScore.toString());
+    expect(bEvent.args.sourceColonyId.toString()).to.equal("0");
   });
 
   it("charges a losing DEFEND participant the groupStake", async function () {
     const ctx = await deployGame(2);
     const [a, b] = ctx.players;
-    const seed = attackerWinningSeed(1, 1, a, b, 165, 120);
+    const seed = attackerWinningSeed(1, 1, a, b, 85, 120);
     const roundId = await startRound(ctx, seed);
 
     const aAction = attack(b.address, 80);
@@ -534,8 +738,8 @@ describe("BattleManager connected conflict groups", function () {
 
     const aLandLord = await landLordOf(ctx, a);
     const bLandLord = await landLordOf(ctx, b);
-    expect((await aLandLord.getGold()).toString()).to.equal("180");
-    expect((await bLandLord.getGold()).toString()).to.equal("20");
+    expect((await aLandLord.getGold()).toString()).to.equal("1080");
+    expect((await bLandLord.getGold()).toString()).to.equal("920");
   });
 
   it("uses the largest attack wager as groupStake in a three-player group", async function () {
@@ -581,9 +785,10 @@ describe("BattleManager connected conflict groups", function () {
     const ctx = await deployGame(2);
     const [a, b] = ctx.players;
     const bLandLord = await landLordOf(ctx, b);
-    await bLandLord.connect(b).spendGoldToReplenish(0, 90);
+    const bColonyId = await firstColonyOf(ctx, b);
+    await ctx.tournament.connect(b).allocateColonyGold(bColonyId, 0, 990);
 
-    const seed = attackerWinningSeed(1, 1, a, b, 120, 120);
+    const seed = attackerWinningSeed(1, 1, a, b, 85, 120);
     const roundId = await startRound(ctx, seed);
 
     const aAction = attack(b.address, 35);
@@ -612,7 +817,7 @@ describe("BattleManager connected conflict groups", function () {
   it("does not charge the winner", async function () {
     const ctx = await deployGame(2);
     const [a, b] = ctx.players;
-    const seed = attackerWinningSeed(1, 1, a, b, 165, 120);
+    const seed = attackerWinningSeed(1, 1, a, b, 85, 120);
     const roundId = await startRound(ctx, seed);
 
     const aAction = attack(b.address, 80);
@@ -680,9 +885,9 @@ describe("BattleManager connected conflict groups", function () {
     const ctx = await deployGame(2);
     const [a, b] = ctx.players;
 
-    const aInfo = await ctx.tournament.playerInfo(a.address);
-    const aLandLord = ctx.LandLord.attach(aInfo.landLord);
-    await aLandLord.connect(a).spendGoldToReplenish(0, 99);
+    const aColonyId = await firstColonyOf(ctx, a);
+    const aLandLord = await landLordOfColony(ctx, aColonyId);
+    await ctx.tournament.connect(a).allocateColonyGold(aColonyId, 0, 999);
 
     const seed = defenderWinningSeed(1, 1, a, b);
     const roundId = await startRound(ctx, seed);

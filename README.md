@@ -14,7 +14,7 @@ Players
        -> IYieldAdapter
             -> NoYieldAdapter now
             -> future Aave/stETH/wstETH adapter later
-       -> LandLord clones
+       -> LandLord clones per colony
        -> BattleManager
             -> commit/reveal actions
             -> battle resolution callbacks
@@ -29,7 +29,7 @@ WorldGraph
 
 - `contracts/TournamentManager.sol`
   - Defines `TournamentManager`.
-  - Handles equal entry deposits, player registration, table assignment, round transitions, principal/yield accounting, LandLord clone creation, battle settlement hooks, and VRF handoff.
+  - Handles equal entry deposits, player registration, table assignment, round transitions, principal/yield accounting, colony/LandLord clone creation, battle settlement hooks, and VRF handoff.
 
 - `contracts/BattleManager.sol`
   - Handles commit/reveal rounds.
@@ -37,8 +37,8 @@ WorldGraph
   - Enforces one attack per player per round and resolves connected conflict groups.
 
 - `contracts/LandLord.sol`
-  - Per-player virtual resource state.
-  - Tracks gold, food, water, oxygen, shelter, army, derived population, build stabilization, decay, and gold transfers.
+  - Per-colony virtual resource state.
+  - Tracks gold, food, water, oxygen, shelter, army, derived population pressure, build stabilization credits, and gold transfers.
   - Does not track buildings or tiles; those are front-end abstractions.
   - Does not hold ETH, aTokens, or yield assets.
 
@@ -59,26 +59,28 @@ WorldGraph
 1. Admin deploys/configures `TournamentManager`, `LandLord` implementation, yield adapter, `BattleManager`, and VRF provider.
 2. Players register with the same ETH entry deposit.
 3. TournamentManager deposits ETH into the configured `IYieldAdapter`.
-4. TournamentManager creates a `LandLord` clone for each player and assigns starting virtual resources.
+4. TournamentManager creates a starting colony for each player. Each colony owns a `LandLord` clone with its own virtual resources and gold.
 5. Players are assigned to tables with a max size of 9.
-6. Each round snapshots table membership, requests randomness, runs commit/reveal, resolves battles, applies decay, and rebalances tables between rounds.
+6. Each round snapshots table membership, requests randomness, runs commit/reveal, resolves battles, applies per-colony support checks, and rebalances tables between rounds.
 7. At tournament end, participant principal can be claimed. Yield/profit above principal can be awarded to the winner.
 
 ## Commit/Reveal Battle Flow
 
-Players first commit a hash, then reveal their action during the reveal phase. The commit hash includes tournament id, round id, player, action type, target, wager, salt, chain id, and BattleManager address.
+Players first commit a hash, then reveal their action during the reveal phase. The commit hash includes tournament id, round id, player, action type, target player, wager, source colony id, target colony id, salt, chain id, and BattleManager address.
 
 Actions:
 
-- `ATTACK`: targets an active player at the same frozen round table and includes a positive gold wager.
+- `ATTACK`: targets an active player at the same frozen round table, selects the attacker's source colony and defender's target colony, and includes a positive gold wager.
 - `DEFEND`: default action if a player does not reveal; no wager.
-- `BUILD`: no wager; improves non-gold resources through LandLord.
+- `BUILD`: no wager; stores one support stabilization credit on the selected colony.
 
-Attacks are resolved as connected conflict groups within a frozen round table. The largest attack wager in the group becomes the group stake, and participant scores use randomness, army, wager, and action matchups.
+Attacks are resolved as connected conflict groups within a frozen round table. The largest attack wager in the group becomes the group stake, and participant scores use randomness, a capped army-allocation ratio bonus, and action matchups.
 
 ## Resource Model
 
-Gold is the main tournament survival currency and the only attack wager. Players can allocate gold directly into food, water, oxygen, shelter, or army at a 1:1 ratio. Food, water, oxygen, shelter, and army decay from derived population pressure each round; population is calculated from the round number and is not stored as mutable player state.
+Gold is the main tournament survival currency and the only attack wager. Players can allocate gold directly into food, water, oxygen, shelter, or army at a 1:1 ratio. Food, water, oxygen, shelter, and army are visible capacity resources and do not decay automatically. Population pressure is derived from the round number, adjusted by per-colony BUILD support credits, and support checks eliminate colonies that cannot meet the required capacity.
+
+Expansion creates additional internal colonies for the same tournament player. Colonies do not receive separate table seats, cannot attack independently, and do not change neighbor assignment. A player remains active while at least one owned colony remains active.
 
 LandLord owns gameplay accounting only. ETH principal, yield, and adapter shares stay in TournamentManager/yield adapter logic.
 
@@ -107,7 +109,7 @@ Notably:
 - Extract local manager/provider interfaces into dedicated interface files.
 - Add tests for registration, table snapshots, commit/reveal, battle settlement, rebalancing, principal claims, and yield claims.
 - Replace `NoYieldAdapter` with a real audited adapter only after choosing the final yield source.
-- Review gas limits for full-table rebalancing and per-round decay loops before large tournaments.
+- Review gas limits for full-table rebalancing and per-round support-check loops before large tournaments.
 - Audit access control, settlement accounting, and randomness assumptions before deployment.
 
 ## Commands
