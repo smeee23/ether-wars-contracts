@@ -25,8 +25,8 @@ describe("TournamentManager ETH and yield accounting", function () {
     await tournament.deployed();
     await yieldAdapter.setController(tournament.address);
 
-    await tournament.connect(alice).register(0, { value: entryDeposit });
-    await tournament.connect(bob).register(0, { value: entryDeposit });
+    await tournament.connect(alice).register({ value: entryDeposit });
+    await tournament.connect(bob).register({ value: entryDeposit });
 
     expect((await tournament.totalPrincipal()).toString()).to.equal(
       entryDeposit.mul(2).toString()

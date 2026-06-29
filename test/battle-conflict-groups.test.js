@@ -52,7 +52,7 @@ describe("BattleManager connected conflict groups", function () {
     for (const player of players) {
       await tournament
         .connect(player)
-        .register(0, { value: ethers.utils.parseEther("1") });
+        .register({ value: ethers.utils.parseEther("1") });
     }
 
     await tournament.startTournament();
