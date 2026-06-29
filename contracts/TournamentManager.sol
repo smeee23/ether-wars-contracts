@@ -47,6 +47,9 @@ contract TournamentManager is ReentrancyGuard {
     uint256 public constant BASIS_POINTS = 10_000;
     uint256 public constant ARMY_BONUS_BPS_STEP = 500;
     uint256 public constant MAX_ARMY_BONUS = 20;
+    uint256 private constant INITIAL_COLONIES = 1;
+    uint256 private constant MAX_COLONIES = 3;
+    uint256 private constant EXPANSION_CLAIM_WINDOW_ROUNDS = 3;
 
     enum TournamentState {
         Registration,
@@ -94,17 +97,20 @@ contract TournamentManager is ReentrancyGuard {
     uint256 public nextColonyId;
     uint256 public lastStartedRound;
     uint256 public lastEndedRound;
+    uint256 public expansionUnlockRound;
     address[] public players;
     mapping(address => PlayerInfo) public playerInfo;
     mapping(uint256 => ColonyInfo) public colonyInfo;
     mapping(address => uint256[]) private playerColonies;
     mapping(address => uint256) public activeColonyCount;
     mapping(address => uint256) public expansionsUsed;
+    mapping(address => uint256) private expansionClaims;
     mapping(uint256 => address[]) private tablePlayers;
     mapping(uint256 => mapping(address => bool)) public roundPlayerActive;
     mapping(uint256 => mapping(address => uint256)) public roundTableOf;
     mapping(uint256 => mapping(uint256 => address[])) private roundTablePlayers;
     mapping(uint256 => uint256) public vrfRequestToRound;
+    mapping(uint256 => uint256) private roundRandomnessRequestId;
 
     event PlayerRegistered(address indexed player);
     event ColonyCreated(
@@ -131,6 +137,7 @@ contract TournamentManager is ReentrancyGuard {
     event WithdrawnFromYieldAdapter(address indexed to, uint256 amount);
     event TournamentSettled(uint256 totalAssets, uint256 totalPrincipal, uint256 profit);
     event RoundStarted(uint256 indexed roundId, uint256 indexed requestId);
+    event RoundRandomnessRequested(uint256 indexed roundId, uint256 indexed requestId);
     event RoundEnded(uint256 indexed roundId);
     event RoundRandomnessApproved(uint256 indexed roundId, uint256 randomness);
     event PlayerEliminated(address indexed player);
@@ -229,21 +236,22 @@ contract TournamentManager is ReentrancyGuard {
         emit MapRegistrySet(_mapRegistry);
     }
 
-    function register(uint256 splitArmy)
+    function register()
         external
         payable
         nonReentrant
         inState(TournamentState.Registration)
     {
-        require(msg.value == entryDeposit, "entry deposit required");
-        require(!playerInfo[msg.sender].registered, "already registered");
+        require(msg.value == entryDeposit, "deposit");
+        require(!playerInfo[msg.sender].registered, "registered");
 
-        splitArmy;
         uint256 shares = IYieldAdapter(yieldAdapter).depositETH{value: msg.value}();
         totalPrincipal += msg.value;
         totalAdapterShares += shares;
 
-        _createColony(msg.sender);
+        for (uint256 i = 0; i < INITIAL_COLONIES; i++) {
+            _createColony(msg.sender);
+        }
 
         playerInfo[msg.sender] = PlayerInfo({
             registered: true,
@@ -266,7 +274,7 @@ contract TournamentManager is ReentrancyGuard {
         onlyAdmin
         inState(TournamentState.Registration)
     {
-        require(players.length > 1, "not enough players");
+        require(players.length > 1, "players");
         initialPlayerCount = players.length;
         state = TournamentState.Active;
         emit TournamentStarted();
@@ -277,8 +285,8 @@ contract TournamentManager is ReentrancyGuard {
         inState(TournamentState.Active)
         returns (uint256 colonyId)
     {
-        require(playerInfo[msg.sender].active, "player inactive");
-        require(battleManager != address(0), "battle manager not set");
+        require(playerInfo[msg.sender].active, "inactive");
+        require(battleManager != address(0), "battle manager");
         require(
             ITournamentBattleManager(battleManager).getPhase() ==
                 ITournamentBattleManager.Phase.Commit,
@@ -291,18 +299,31 @@ contract TournamentManager is ReentrancyGuard {
             ) == bytes32(0),
             "already committed"
         );
-        require(expansionsUsed[msg.sender] < maxUnlockedExpansions(), "expansion locked");
+        uint256 expansionSlot = _claimableExpansionSlot(msg.sender);
+        require(expansionSlot != 0, "expansion locked");
+        require(activeColonyCount[msg.sender] < MAX_COLONIES, "max");
 
+        expansionClaims[msg.sender] |= expansionSlot;
         expansionsUsed[msg.sender]++;
         colonyId = _createColony(msg.sender);
     }
 
     function maxUnlockedExpansions() public view returns (uint256) {
         if (state != TournamentState.Active || initialPlayerCount == 0) return 0;
+        uint256 roundId = lastStartedRound;
+        uint256 unlocked;
 
-        uint256 unlocked = lastStartedRound > 0 ? 1 : 0;
-        if (activePlayers * 2 <= initialPlayerCount) unlocked = 2;
-        if (activePlayers * 4 <= initialPlayerCount) unlocked = 3;
+        if (roundId > 0 && roundId <= EXPANSION_CLAIM_WINDOW_ROUNDS) {
+            unlocked++;
+        }
+
+        if (
+            expansionUnlockRound != 0 &&
+            roundId > expansionUnlockRound &&
+            roundId <= expansionUnlockRound + EXPANSION_CLAIM_WINDOW_ROUNDS
+        ) {
+            unlocked++;
+        }
 
         return unlocked;
     }
@@ -321,21 +342,42 @@ contract TournamentManager is ReentrancyGuard {
         inState(TournamentState.Active)
         returns (uint256 roundId, uint256 requestId)
     {
-        require(battleManager != address(0), "battle manager not set");
-        require(vrfProvider != address(0), "vrf provider not set");
+        require(battleManager != address(0), "battle manager");
+        require(vrfProvider != address(0), "vrf provider");
         require(
             lastStartedRound == lastEndedRound,
-            "previous round not ended"
+            "round active"
         );
 
         roundId = ITournamentBattleManager(battleManager).startNextRound();
         lastStartedRound = roundId;
         _snapshotTables(roundId);
 
+        emit RoundStarted(roundId, requestId);
+    }
+
+    function requestRoundRandomness(uint256 roundId)
+        external
+        onlyAdmin
+        inState(TournamentState.Active)
+        returns (uint256 requestId)
+    {
+        require(vrfProvider != address(0), "vrf provider");
+        require(roundId != 0, "round");
+        require(roundId == lastStartedRound, "round mismatch");
+        require(lastEndedRound < roundId, "round already ended");
+        require(ITournamentBattleManager(battleManager).canEndRound(), "reveal still open");
+        require(
+            ITournamentBattleManager(battleManager).getRoundRandomness(roundId) == 0,
+            "randomness set"
+        );
+        require(roundRandomnessRequestId[roundId] == 0, "randomness requested");
+
         requestId = ITournamentVRFProvider(vrfProvider).requestRandomness(roundId);
         vrfRequestToRound[requestId] = roundId;
+        roundRandomnessRequestId[roundId] = requestId;
 
-        emit RoundStarted(roundId, requestId);
+        emit RoundRandomnessRequested(roundId, requestId);
     }
 
     function endBattleRound()
@@ -344,14 +386,14 @@ contract TournamentManager is ReentrancyGuard {
         inState(TournamentState.Active)
     {
         uint256 roundId = ITournamentBattleManager(battleManager).currentRound();
-        require(roundId != 0, "no round");
+        require(roundId != 0, "round");
         require(roundId == lastStartedRound, "round mismatch");
-        require(lastEndedRound < roundId, "round already ended");
+        require(lastEndedRound < roundId, "round ended");
         require(ITournamentBattleManager(battleManager).canEndRound(), "round not over");
 
         uint256 randomness = ITournamentBattleManager(battleManager)
             .getRoundRandomness(roundId);
-        require(randomness != 0, "randomness not set");
+        require(randomness != 0, "randomness");
 
         lastEndedRound = roundId;
         emit RoundEnded(roundId);
@@ -371,8 +413,10 @@ contract TournamentManager is ReentrancyGuard {
         onlyVrfProvider
     {
         uint256 roundId = vrfRequestToRound[requestId];
-        require(roundId != 0, "unknown request");
-        require(randomness != 0, "empty randomness");
+        require(roundId != 0, "request");
+        require(roundId == lastStartedRound, "round mismatch");
+        require(lastEndedRound < roundId, "round ended");
+        require(randomness != 0, "randomness");
 
         ITournamentBattleManager(battleManager).setRoundRandomness(
             roundId,
@@ -402,6 +446,7 @@ contract TournamentManager is ReentrancyGuard {
 
         uint256 resolvedWinnerColony = _resolveActionColony(winner, winnerColonyId);
         require(resolvedWinnerColony != 0, "missing winner colony");
+        require(_isColonyAvailableForRound(resolvedWinnerColony, roundId), "pending");
         address winnerLandLord = colonyInfo[resolvedWinnerColony].landLord;
 
         for (uint256 i = 0; i < participants.length; i++) {
@@ -422,7 +467,7 @@ contract TournamentManager is ReentrancyGuard {
 
     }
 
-    function applyBuildAction(address player) external onlyBattleManager {
+    function applyBuildAction(address player, uint256 roundId) external onlyBattleManager {
         require(playerInfo[player].active, "player inactive");
         require(activeColonyCount[player] > 0, "no active colony");
 
@@ -431,6 +476,7 @@ contract TournamentManager is ReentrancyGuard {
             uint256 activeColonyId = colonies[i];
             ColonyInfo memory colony = colonyInfo[activeColonyId];
             if (!colony.active) continue;
+            if (!_isColonyAvailableForRound(activeColonyId, roundId)) continue;
 
             LandLord(colony.landLord).applyBuildAction();
             emit BuildActionApplied(player, activeColonyId, colony.landLord);
@@ -447,6 +493,7 @@ contract TournamentManager is ReentrancyGuard {
     ) internal returns (uint256 transferred) {
         uint256 loserColonyId = _resolveActionColony(loser, paymentColonyId);
         require(loserColonyId != 0, "missing loser colony");
+        require(_isColonyAvailableForRound(loserColonyId, roundId), "pending");
 
         transferred = LandLord(colonyInfo[loserColonyId].landLord)
             .transferGoldTo(winnerLandLord, groupStake);
@@ -478,6 +525,10 @@ contract TournamentManager is ReentrancyGuard {
         onlyAdmin
         inState(TournamentState.Active)
     {
+        require(
+            ITournamentBattleManager(battleManager).getRoundRandomness(roundId) != 0,
+            "randomness not ready"
+        );
         ITournamentBattleManager(battleManager).resolveTableConflicts(
             tableId,
             roundId
@@ -583,6 +634,7 @@ contract TournamentManager is ReentrancyGuard {
         uint256 goldAmount
     ) external {
         require(_ownsActiveColony(msg.sender, colonyId), "invalid colony");
+        require(_isColonyAvailableNow(colonyId), "pending");
         LandLord(colonyInfo[colonyId].landLord).allocateGoldByController(
             resource,
             goldAmount
@@ -597,6 +649,8 @@ contract TournamentManager is ReentrancyGuard {
         require(amount > 0, "invalid amount");
         require(_ownsActiveColony(msg.sender, fromColonyId), "invalid source colony");
         require(_ownsActiveColony(msg.sender, toColonyId), "invalid target colony");
+        require(_isColonyAvailableNow(fromColonyId), "pending");
+        require(_isColonyAvailableNow(toColonyId), "pending");
         require(battleManager != address(0), "battle manager not set");
         require(
             ITournamentBattleManager(battleManager).getPhase() ==
@@ -674,6 +728,43 @@ contract TournamentManager is ReentrancyGuard {
         return colonyId;
     }
 
+    function _claimableExpansionSlot(address player) internal view returns (uint256) {
+        uint256 roundId = lastStartedRound;
+        uint256 claims = expansionClaims[player];
+
+        if (
+            roundId > 0 &&
+            roundId <= EXPANSION_CLAIM_WINDOW_ROUNDS &&
+            (claims & 1) == 0
+        ) {
+            return 1;
+        }
+
+        if (
+            expansionUnlockRound != 0 &&
+            roundId > expansionUnlockRound &&
+            roundId <= expansionUnlockRound + EXPANSION_CLAIM_WINDOW_ROUNDS &&
+            (claims & 2) == 0
+        ) {
+            return 2;
+        }
+
+        return 0;
+    }
+
+    function _isColonyAvailableNow(uint256 colonyId) internal view returns (bool) {
+        return lastStartedRound == 0 ||
+            _isColonyAvailableForRound(colonyId, lastStartedRound);
+    }
+
+    function _isColonyAvailableForRound(uint256 colonyId, uint256 roundId)
+        internal
+        view
+        returns (bool)
+    {
+        return colonyInfo[colonyId].createdRound < roundId;
+    }
+
     function _eliminateColony(uint256 colonyId) internal {
         ColonyInfo storage colony = colonyInfo[colonyId];
         require(colony.active, "colony inactive");
@@ -693,6 +784,16 @@ contract TournamentManager is ReentrancyGuard {
         info.active = false;
         activePlayers--;
         emit PlayerEliminated(player);
+        _unlockExpansionIfMilestoneReached();
+    }
+
+    function _unlockExpansionIfMilestoneReached() internal {
+        if (expansionUnlockRound != 0) return;
+        if (initialPlayerCount == 0) return;
+        if (activePlayers * 2 > initialPlayerCount) return;
+
+        uint256 roundId = ITournamentBattleManager(battleManager).currentRound();
+        expansionUnlockRound = roundId;
     }
 
     function _completeTournament() internal {
@@ -808,6 +909,8 @@ contract TournamentManager is ReentrancyGuard {
         }
         if (!_ownsActiveColony(attacker, sourceColonyId)) return false;
         if (!_ownsActiveColony(target, targetColonyId)) return false;
+        if (!_isColonyAvailableForRound(sourceColonyId, roundId)) return false;
+        if (!_isColonyAvailableForRound(targetColonyId, roundId)) return false;
         if (wager > getColonyGold(sourceColonyId)) return false;
 
         return true;
@@ -861,6 +964,7 @@ contract TournamentManager is ReentrancyGuard {
                 uint256 colonyId = colonies[j];
                 ColonyInfo memory colony = colonyInfo[colonyId];
                 if (!colony.active) continue;
+                if (!_isColonyAvailableForRound(colonyId, roundId)) continue;
 
                 bool eliminated = LandLord(colony.landLord).applyRoundUpkeep(
                     player,

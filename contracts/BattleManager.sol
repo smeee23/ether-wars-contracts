@@ -24,7 +24,7 @@ interface IBattleTournamentManager {
         uint256 groupStake
     ) external returns (uint256 totalTransferred);
 
-    function applyBuildAction(address player) external;
+    function applyBuildAction(address player, uint256 roundId) external;
 
     function getRoundTablePlayers(uint256 roundId, uint256 tableId)
         external
@@ -648,7 +648,8 @@ contract BattleManager is ReentrancyGuard {
             if (_hasIncomingAttack(tablePlayers[i], tablePlayers, actions)) continue;
 
             IBattleTournamentManager(tournamentManager).applyBuildAction(
-                tablePlayers[i]
+                tablePlayers[i],
+                currentRound
             );
         }
     }

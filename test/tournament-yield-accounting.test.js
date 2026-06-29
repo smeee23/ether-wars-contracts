@@ -46,6 +46,7 @@ describe("TournamentManager ETH and yield accounting", function () {
 
     expect(aliceInfo.deposited.toString()).to.equal(entryDeposit.toString());
     expect(aliceInfo.adapterShares.toString()).to.equal(entryDeposit.toString());
+    expect(aliceColonies.length).to.equal(1);
     expect(aliceResources.oxygen.toString()).to.equal("0");
 
     await tournament.startTournament();
