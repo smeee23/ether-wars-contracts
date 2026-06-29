@@ -422,9 +422,9 @@ contract TournamentManager is ReentrancyGuard {
 
     }
 
-    function applyBuildAction(address player, uint256 colonyId) external onlyBattleManager {
+    function applyBuildAction(address player) external onlyBattleManager {
         require(playerInfo[player].active, "player inactive");
-        require(_ownsActiveColony(player, colonyId), "invalid colony");
+        require(activeColonyCount[player] > 0, "no active colony");
 
         uint256[] memory colonies = playerColonies[player];
         for (uint256 i = 0; i < colonies.length; i++) {

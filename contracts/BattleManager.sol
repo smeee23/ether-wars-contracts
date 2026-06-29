@@ -24,7 +24,7 @@ interface IBattleTournamentManager {
         uint256 groupStake
     ) external returns (uint256 totalTransferred);
 
-    function applyBuildAction(address player, uint256 colonyId) external;
+    function applyBuildAction(address player) external;
 
     function getRoundTablePlayers(uint256 roundId, uint256 tableId)
         external
@@ -369,7 +369,7 @@ contract BattleManager is ReentrancyGuard {
         } else if (action.actionType == ActionType.BUILD) {
             require(action.target == address(0), "build target");
             require(action.amount == 0, "build wager");
-            require(action.sourceColonyId != 0, "build colony");
+            require(action.sourceColonyId == 0, "build source colony");
             require(action.targetColonyId == 0, "build target colony");
         } else if (action.actionType == ActionType.DEFEND) {
             require(action.target == address(0), "defend target");
@@ -648,8 +648,7 @@ contract BattleManager is ReentrancyGuard {
             if (_hasIncomingAttack(tablePlayers[i], tablePlayers, actions)) continue;
 
             IBattleTournamentManager(tournamentManager).applyBuildAction(
-                tablePlayers[i],
-                actions[i].sourceColonyId
+                tablePlayers[i]
             );
         }
     }

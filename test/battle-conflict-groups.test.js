@@ -134,7 +134,7 @@ describe("BattleManager connected conflict groups", function () {
 
   async function normalizeAction(ctx, player, action) {
     if (
-      action.actionType !== DEFEND &&
+      action.actionType === ATTACK &&
       (action.sourceColonyId === undefined || action.sourceColonyId === 0)
     ) {
       action.sourceColonyId = await firstColonyOf(ctx, player);
@@ -146,7 +146,7 @@ describe("BattleManager connected conflict groups", function () {
     } else {
       action.targetColonyId = 0;
     }
-    if (action.actionType === DEFEND) {
+    if (action.actionType === DEFEND || action.actionType === BUILD) {
       action.sourceColonyId = 0;
     }
   }
@@ -487,7 +487,6 @@ describe("BattleManager connected conflict groups", function () {
     const aAction = attack(b.address, 10);
     aAction.targetColonyId = attackedColony;
     const bAction = build();
-    bAction.sourceColonyId = buildColony;
     const aSalt = await commitAction(ctx, a, roundId, aAction, "a");
     const bSalt = await commitAction(ctx, b, roundId, bAction, "b");
 
@@ -512,7 +511,7 @@ describe("BattleManager connected conflict groups", function () {
     expect((await buildLandLord.supportCredits()).toString()).to.equal("0");
     expect((await attackedLandLord.supportCredits()).toString()).to.equal("0");
     expect(bEvent.args.score.toString()).to.equal(expectedScore.toString());
-    expect(bEvent.args.sourceColonyId.toString()).to.equal(buildColony.toString());
+    expect(bEvent.args.sourceColonyId.toString()).to.equal("0");
   });
 
   it("expands into an internal colony without changing table seats", async function () {
