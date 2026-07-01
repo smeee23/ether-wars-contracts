@@ -21,6 +21,7 @@ interface ITournamentBattleManager {
     function canEndRound() external view returns (bool);
     function getRoundRandomness(uint256 roundId) external view returns (uint256);
     function commits(uint256 roundId, address player) external view returns (bytes32);
+    function tableConflictsResolved(uint256 roundId, uint256 tableId) external view returns (bool);
 }
 
 interface ITournamentVRFProvider {
@@ -108,7 +109,8 @@ contract TournamentManager is ReentrancyGuard {
     mapping(uint256 => address[]) private tablePlayers;
     mapping(uint256 => mapping(address => bool)) public roundPlayerActive;
     mapping(uint256 => mapping(address => uint256)) public roundTableOf;
-    mapping(uint256 => mapping(uint256 => address[])) private roundTablePlayers;
+    mapping(uint256 => uint256) public roundRequiredTableCount;
+    mapping(uint256 => uint256) public resolvedTableCount;
     mapping(uint256 => uint256) public vrfRequestToRound;
     mapping(uint256 => uint256) private roundRandomnessRequestId;
 
@@ -351,7 +353,7 @@ contract TournamentManager is ReentrancyGuard {
 
         roundId = ITournamentBattleManager(battleManager).startNextRound();
         lastStartedRound = roundId;
-        _snapshotTables(roundId);
+        roundRequiredTableCount[roundId] = _snapshotTables(roundId);
 
         emit RoundStarted(roundId, requestId);
     }
@@ -394,6 +396,12 @@ contract TournamentManager is ReentrancyGuard {
         uint256 randomness = ITournamentBattleManager(battleManager)
             .getRoundRandomness(roundId);
         require(randomness != 0, "randomness");
+        // tablePlayers is the canonical resolution order until every active
+        // table resolves; only then may upkeep, penalties, and rebalance run.
+        require(
+            resolvedTableCount[roundId] == roundRequiredTableCount[roundId],
+            "unresolved tables"
+        );
 
         lastEndedRound = roundId;
         emit RoundEnded(roundId);
@@ -531,10 +539,15 @@ contract TournamentManager is ReentrancyGuard {
             ITournamentBattleManager(battleManager).getRoundRandomness(roundId) != 0,
             "randomness not ready"
         );
+        require(
+            !ITournamentBattleManager(battleManager).tableConflictsResolved(roundId, tableId),
+            "table resolved"
+        );
         ITournamentBattleManager(battleManager).resolveTableConflicts(
             tableId,
             roundId
         );
+        resolvedTableCount[roundId]++;
     }
 
     function settleTournament() external onlyAdmin inState(TournamentState.Complete) {
@@ -823,14 +836,6 @@ contract TournamentManager is ReentrancyGuard {
         return tablePlayers[tableId];
     }
 
-    function getRoundTablePlayers(uint256 roundId, uint256 tableId)
-        external
-        view
-        returns (address[] memory)
-    {
-        return roundTablePlayers[roundId][tableId];
-    }
-
     function getRoundTableOf(uint256 roundId, address player)
         external
         view
@@ -944,7 +949,9 @@ contract TournamentManager is ReentrancyGuard {
         emit TableAssigned(player, tableCount);
     }
 
-    function _snapshotTables(uint256 roundId) internal {
+    function _snapshotTables(uint256 roundId) internal returns (uint256 requiredTableCount) {
+        bool[] memory tableSeen = new bool[](tableCount + 1);
+
         for (uint256 i = 0; i < players.length; i++) {
             address player = players[i];
             PlayerInfo memory info = playerInfo[player];
@@ -952,7 +959,15 @@ contract TournamentManager is ReentrancyGuard {
 
             roundPlayerActive[roundId][player] = true;
             roundTableOf[roundId][player] = info.tableId;
-            roundTablePlayers[roundId][info.tableId].push(player);
+
+            if (
+                info.tableId != 0 &&
+                info.tableId <= tableCount &&
+                !tableSeen[info.tableId]
+            ) {
+                tableSeen[info.tableId] = true;
+                requiredTableCount++;
+            }
         }
     }
 

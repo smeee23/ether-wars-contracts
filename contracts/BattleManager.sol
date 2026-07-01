@@ -26,7 +26,7 @@ interface IBattleTournamentManager {
 
     function applyBuildAction(address player, uint256 roundId) external;
 
-    function getRoundTablePlayers(uint256 roundId, uint256 tableId)
+    function getTablePlayers(uint256 tableId)
         external
         view
         returns (address[] memory);
@@ -337,7 +337,7 @@ contract BattleManager is ReentrancyGuard {
         require(randomness != 0, "randomness not set");
 
         address[] memory players = IBattleTournamentManager(tournamentManager)
-            .getRoundTablePlayers(roundId, tableId);
+            .getTablePlayers(tableId);
         require(players.length > 0, "empty table");
         require(players.length <= 9, "table too large");
 
