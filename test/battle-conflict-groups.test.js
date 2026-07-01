@@ -12,6 +12,9 @@ const ARMY_BONUS_BPS_STEP = 500;
 const MAX_ARMY_BONUS = 20;
 const COMMIT_DURATION = 4 * 60 * 60;
 const REVEAL_DURATION = 2 * 60 * 60;
+const PENALTY_DOMAIN = ethers.BigNumber.from(
+  ethers.utils.keccak256(ethers.utils.toUtf8Bytes("resource-penalty"))
+);
 
 describe("BattleManager connected conflict groups", function () {
   async function deployGame(playerCount) {
@@ -198,6 +201,28 @@ describe("BattleManager connected conflict groups", function () {
       .toNumber();
   }
 
+  function penaltyRoll(randomness, roundId, player, colonyId, resource) {
+    return ethers.BigNumber.from(
+      ethers.utils.keccak256(
+        encoded(
+          ["uint256", "uint256", "address", "uint256", "uint256", "uint256"],
+          [randomness, roundId, player.address, colonyId, resource, PENALTY_DOMAIN]
+        )
+      )
+    )
+      .mod(BASIS_POINTS)
+      .toNumber();
+  }
+
+  function penaltySeed(roundId, player, colonyId, resource) {
+    for (let seed = 1; seed < 1000; seed++) {
+      if (penaltyRoll(seed, roundId, player, colonyId, resource) < 1000) {
+        return seed;
+      }
+    }
+    throw new Error("no penalty seed found");
+  }
+
   function armyBonus(resources) {
     const total = ["gold", "food", "water", "oxygen", "shelter", "army"]
       .map((key) => resources[key].toNumber())
@@ -252,9 +277,9 @@ describe("BattleManager connected conflict groups", function () {
     const firstHash = groupHash(roundId, tableId, [a, b]);
     const secondHash = groupHash(roundId, tableId, [c, d]);
     for (let seed = 1; seed < 1000; seed++) {
-      const firstAttackerScore = 85 + roll(seed, roundId, tableId, firstHash, a);
+      const firstAttackerScore = 103 + roll(seed, roundId, tableId, firstHash, a);
       const firstDefenderScore = 120 + roll(seed, roundId, tableId, firstHash, b);
-      const secondAttackerScore = 85 + roll(seed, roundId, tableId, secondHash, c);
+      const secondAttackerScore = 103 + roll(seed, roundId, tableId, secondHash, c);
       const secondDefenderScore = 120 + roll(seed, roundId, tableId, secondHash, d);
       if (
         firstAttackerScore > firstDefenderScore &&
@@ -287,6 +312,14 @@ describe("BattleManager connected conflict groups", function () {
     }
   }
 
+  async function fundMilestoneAttacker(ctx, player) {
+    const colonyId = await firstColonyOf(ctx, player);
+    for (let resource = 0; resource <= 3; resource++) {
+      await ctx.tournament.connect(player).allocateColonyGold(colonyId, resource, 20);
+    }
+    await ctx.tournament.connect(player).allocateColonyGold(colonyId, 4, 900);
+  }
+
   async function activateFirstExpansion(ctx, expandPlayers, nextRoundRandomness = 12345) {
     await fundAllSurvival(ctx);
     const setupRoundId = await startRound(ctx);
@@ -308,8 +341,8 @@ describe("BattleManager connected conflict groups", function () {
 
   async function unlockExpansionMilestone(ctx) {
     const [a, b, c, d] = ctx.players;
-    await fundColonySurvival(ctx, a);
-    await fundColonySurvival(ctx, c);
+    await fundMilestoneAttacker(ctx, a);
+    await fundMilestoneAttacker(ctx, c);
     await preparePlayerForElimination(ctx, b);
     await preparePlayerForElimination(ctx, d);
 
@@ -1021,6 +1054,41 @@ describe("BattleManager connected conflict groups", function () {
 
     const groups = await resolveTable(ctx, roundId);
     expect(groups.length).to.equal(0);
+  });
+
+  it("applies deterministic resource penalties from the existing round randomness", async function () {
+    const ctx = await deployGame(2);
+    const [a, b] = ctx.players;
+    const aColonyId = await firstColonyOf(ctx, a);
+    const bColonyId = await firstColonyOf(ctx, b);
+    const aLandLord = await landLordOfColony(ctx, aColonyId);
+    const bLandLord = await landLordOfColony(ctx, bColonyId);
+
+    for (let resource = 0; resource <= 4; resource++) {
+      await ctx.tournament.connect(a).allocateColonyGold(aColonyId, resource, 20);
+      await ctx.tournament.connect(b).allocateColonyGold(bColonyId, resource, 6);
+    }
+
+    const seed = penaltySeed(1, a, aColonyId, 0);
+    const roundId = await startRound(ctx, seed);
+    const requestIdBefore = await ctx.vrfProvider.nextRequestId();
+
+    await revealPhase();
+    await resolvePhase();
+    await resolveTable(ctx, roundId);
+    await ctx.tournament.endBattleRound();
+
+    const requestIdAfter = await ctx.vrfProvider.nextRequestId();
+    const resources = await aLandLord.getResources();
+    const events = await aLandLord.queryFilter(
+      aLandLord.filters.ResourcePenaltyApplied(roundId, a.address, aColonyId)
+    );
+    const foodPenalty = events.find((event) => Number(event.args.resource) === 0);
+
+    expect(requestIdAfter.sub(requestIdBefore).toString()).to.equal("1");
+    expect(foodPenalty.args.applied.toString()).to.equal("1");
+    expect(resources.food.toString()).to.equal("19");
+    expect((await bLandLord.getResources()).gold.toString()).to.equal("970");
   });
 
   it("treats an attacked non-revealer as DEFEND", async function () {

@@ -38,6 +38,9 @@ contract LandLord is Initializable {
     uint256 public constant POPULATION_GROWTH_PER_ROUND = 1;
     uint256 public constant POPULATION_UPKEEP_INTERVAL = 10;
     uint256 public constant GOLD_ALLOCATION_RATE = 1;
+    uint256 public constant BASIS_POINTS = 10_000;
+    uint256 public constant PENALTY_CHANCE_BPS = 1_000;
+    uint256 private constant PENALTY_DOMAIN = uint256(keccak256("resource-penalty"));
 
     address public lord;
     address public controller;
@@ -50,6 +53,14 @@ contract LandLord is Initializable {
     event GoldAwarded(uint256 amount);
     event GoldTransferred(address indexed toLandLord, uint256 amount);
     event ResourceAllocated(ResourceType indexed resource, uint256 goldSpent, uint256 amountAdded);
+    event ResourcePenaltyApplied(
+        uint256 indexed round,
+        address indexed player,
+        uint256 indexed colonyId,
+        ResourceType resource,
+        uint256 requested,
+        uint256 applied
+    );
     event BuildSupportCreditStored(uint256 supportCredits);
     event SupportCheckApplied(
         uint256 indexed round,
@@ -120,6 +131,69 @@ contract LandLord is Initializable {
     function awardGold(uint256 amount) external onlyController {
         resources.gold += amount;
         emit GoldAwarded(amount);
+    }
+
+    function applyRandomResourcePenalties(
+        uint256 roundId,
+        uint256 randomness,
+        uint256 colonyId,
+        uint256 amount
+    )
+        external
+        onlyController
+    {
+        for (uint256 resource = 0; resource <= uint256(ResourceType.Army); resource++) {
+            uint256 roll = uint256(
+                keccak256(
+                    abi.encode(
+                        randomness,
+                        roundId,
+                        lord,
+                        colonyId,
+                        resource,
+                        PENALTY_DOMAIN
+                    )
+                )
+            ) % BASIS_POINTS;
+            if (roll >= PENALTY_CHANCE_BPS) continue;
+
+            uint256 applied = _applyResourcePenalty(
+                ResourceType(resource),
+                amount
+            );
+            if (applied > 0) {
+                emit ResourcePenaltyApplied(
+                    roundId,
+                    lord,
+                    colonyId,
+                    ResourceType(resource),
+                    amount,
+                    applied
+                );
+            }
+        }
+    }
+
+    function _applyResourcePenalty(ResourceType resource, uint256 amount)
+        internal
+        returns (uint256 applied)
+    {
+        if (resource == ResourceType.Food) {
+            applied = amount > resources.food ? resources.food : amount;
+            resources.food -= applied;
+        } else if (resource == ResourceType.Water) {
+            applied = amount > resources.water ? resources.water : amount;
+            resources.water -= applied;
+        } else if (resource == ResourceType.Oxygen) {
+            applied = amount > resources.oxygen ? resources.oxygen : amount;
+            resources.oxygen -= applied;
+        } else if (resource == ResourceType.Shelter) {
+            applied = amount > resources.shelter ? resources.shelter : amount;
+            resources.shelter -= applied;
+        } else if (resource == ResourceType.Army) {
+            applied = amount > resources.army ? resources.army : amount;
+            resources.army -= applied;
+        }
     }
 
     function transferGoldTo(address toLandLord, uint256 amount)

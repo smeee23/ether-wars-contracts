@@ -405,6 +405,8 @@ contract TournamentManager is ReentrancyGuard {
             return;
         }
 
+        _applyRandomResourcePenalties(roundId, randomness);
+
         _rebalanceTables(randomness);
     }
 
@@ -973,6 +975,32 @@ contract TournamentManager is ReentrancyGuard {
                 if (eliminated && colonyInfo[colonyId].active) {
                     _eliminateColony(colonyId);
                 }
+            }
+        }
+    }
+
+    function _applyRandomResourcePenalties(uint256 roundId, uint256 randomness)
+        internal
+    {
+        uint256 penaltyAmount = 1 + (roundId / 3);
+
+        for (uint256 i = 0; i < players.length; i++) {
+            address player = players[i];
+            if (!playerInfo[player].active) continue;
+
+            uint256[] memory colonies = playerColonies[player];
+            for (uint256 j = 0; j < colonies.length; j++) {
+                uint256 colonyId = colonies[j];
+                ColonyInfo memory colony = colonyInfo[colonyId];
+                if (!colony.active) continue;
+                if (!_isColonyAvailableForRound(colonyId, roundId)) continue;
+
+                LandLord(colony.landLord).applyRandomResourcePenalties(
+                    roundId,
+                    randomness,
+                    colonyId,
+                    penaltyAmount
+                );
             }
         }
     }
