@@ -31,11 +31,6 @@ interface IBattleTournamentManager {
         view
         returns (address[] memory);
 
-    function getRoundTableOf(uint256 roundId, address player)
-        external
-        view
-        returns (uint256);
-
     function getActionArmyBonus(address player, uint256 colonyId) external view returns (uint256);
 }
 
@@ -92,10 +87,9 @@ contract BattleManager is ReentrancyGuard {
         uint256 targetColonyId;
     }
 
-    struct Round {
+    struct RoundData {
         uint256 commitEnd;
         uint256 revealEnd;
-        Phase phase;
         uint256 randomness; // VRF result
     }
 
@@ -116,18 +110,17 @@ contract BattleManager is ReentrancyGuard {
     address public immutable tournamentManager;
     uint256 public immutable tournamentId;
 
-    mapping(uint256 => Round) public rounds;
+    RoundData public currentRoundData;
 
-    // commit hash per user per round
-    mapping(uint256 => mapping(address => bytes32)) public commits;
+    // active commit hash per user
+    mapping(address => bytes32) public commits;
+    mapping(address => uint256) public commitRound;
 
-    // revealed actions
-    mapping(uint256 => mapping(address => Action)) public revealed;
+    // active revealed action per user
+    mapping(address => Action) public revealed;
+    mapping(address => uint256) public revealedRound;
 
-    // track if revealed
-    mapping(uint256 => mapping(address => bool)) public hasRevealed;
-    mapping(uint256 => mapping(address => bool)) public hasAttacked;
-    mapping(uint256 => mapping(uint256 => bool)) public tableConflictsResolved;
+    mapping(uint256 => uint256) public tableResolvedRound;
 
     // =========================
     // EVENTS
@@ -204,10 +197,9 @@ contract BattleManager is ReentrancyGuard {
     {
         currentRound++;
 
-        rounds[currentRound] = Round({
+        currentRoundData = RoundData({
             commitEnd: block.timestamp + COMMIT_DURATION,
             revealEnd: block.timestamp + COMMIT_DURATION + REVEAL_DURATION,
-            phase: Phase.Commit,
             randomness: 0
         });
 
@@ -216,11 +208,9 @@ contract BattleManager is ReentrancyGuard {
     }
 
     function getPhase() public view returns (Phase) {
-        Round memory r = rounds[currentRound];
-
-        if (block.timestamp < r.commitEnd) {
+        if (block.timestamp < currentRoundData.commitEnd) {
             return Phase.Commit;
-        } else if (block.timestamp < r.revealEnd) {
+        } else if (block.timestamp < currentRoundData.revealEnd) {
             return Phase.Reveal;
         } else {
             return Phase.Resolve;
@@ -232,7 +222,20 @@ contract BattleManager is ReentrancyGuard {
     }
 
     function getRoundRandomness(uint256 roundId) external view returns (uint256) {
-        return rounds[roundId].randomness;
+        if (roundId != currentRound) return 0;
+        return currentRoundData.randomness;
+    }
+
+    function hasCommitted(address player) external view returns (bool) {
+        return commitRound[player] == currentRound;
+    }
+
+    function tableConflictsResolved(uint256 roundId, uint256 tableId)
+        external
+        view
+        returns (bool)
+    {
+        return roundId == currentRound && tableResolvedRound[tableId] == roundId;
     }
 
     // =========================
@@ -243,9 +246,10 @@ contract BattleManager is ReentrancyGuard {
         external
         inPhase(Phase.Commit)
     {
-        require(commits[currentRound][msg.sender] == bytes32(0), "already committed");
+        require(commitRound[msg.sender] != currentRound, "already committed");
 
-        commits[currentRound][msg.sender] = hash;
+        commits[msg.sender] = hash;
+        commitRound[msg.sender] = currentRound;
 
         emit Committed(msg.sender, currentRound);
     }
@@ -272,7 +276,8 @@ contract BattleManager is ReentrancyGuard {
             currentRound
         );
 
-        require(expected == commits[currentRound][msg.sender], "invalid reveal");
+        require(commitRound[msg.sender] == currentRound, "invalid reveal");
+        require(expected == commits[msg.sender], "invalid reveal");
         _recordReveal(msg.sender, action);
     }
 
@@ -295,7 +300,8 @@ contract BattleManager is ReentrancyGuard {
 
         require(signer == r.player, "bad sig");
 
-        require(expected == commits[currentRound][signer], "invalid reveal");
+        require(commitRound[signer] == currentRound, "invalid reveal");
+        require(expected == commits[signer], "invalid reveal");
         _recordReveal(signer, r.action);
     }
 
@@ -312,11 +318,11 @@ contract BattleManager is ReentrancyGuard {
         external
         onlyTournamentManager
     {
-        require(roundId != 0 && roundId <= currentRound, "invalid round");
+        require(roundId != 0 && roundId == currentRound, "invalid round");
         require(randomness != 0, "invalid randomness");
-        require(rounds[roundId].randomness == 0, "randomness already set");
+        require(currentRoundData.randomness == 0, "randomness already set");
 
-        rounds[roundId].randomness = randomness;
+        currentRoundData.randomness = randomness;
         emit RoundRandomnessSet(roundId, randomness);
     }
 
@@ -331,9 +337,9 @@ contract BattleManager is ReentrancyGuard {
         nonReentrant
     {
         require(roundId == currentRound, "round mismatch");
-        require(!tableConflictsResolved[roundId][tableId], "table resolved");
+        require(tableResolvedRound[tableId] != roundId, "table resolved");
 
-        uint256 randomness = rounds[roundId].randomness;
+        uint256 randomness = currentRoundData.randomness;
         require(randomness != 0, "randomness not set");
 
         address[] memory players = IBattleTournamentManager(tournamentManager)
@@ -347,7 +353,7 @@ contract BattleManager is ReentrancyGuard {
         }
 
         bool[] memory visited = new bool[](players.length);
-        tableConflictsResolved[roundId][tableId] = true;
+        tableResolvedRound[tableId] = roundId;
 
         for (uint256 i = 0; i < players.length; i++) {
             if (visited[i]) continue;
@@ -362,7 +368,7 @@ contract BattleManager is ReentrancyGuard {
     // =========================
 
     function _recordReveal(address player, Action calldata action) internal {
-        require(!hasRevealed[currentRound][player], "already revealed");
+        require(revealedRound[player] != currentRound, "already revealed");
 
         if (action.actionType == ActionType.ATTACK) {
             _recordAttackReveal(player, action);
@@ -380,8 +386,8 @@ contract BattleManager is ReentrancyGuard {
             revert("invalid action");
         }
 
-        revealed[currentRound][player] = action;
-        hasRevealed[currentRound][player] = true;
+        revealed[player] = action;
+        revealedRound[player] = currentRound;
 
         emit Revealed(player, currentRound);
     }
@@ -389,7 +395,6 @@ contract BattleManager is ReentrancyGuard {
     function _recordAttackReveal(address attacker, Action calldata action)
         internal
     {
-        require(!hasAttacked[currentRound][attacker], "already attacked");
         require(
             IBattleTournamentManager(tournamentManager).isValidAttackForRound(
                 tournamentId,
@@ -403,7 +408,6 @@ contract BattleManager is ReentrancyGuard {
             "invalid attack"
         );
 
-        hasAttacked[currentRound][attacker] = true;
         emit AttackRevealed(
             currentRound,
             attacker,
@@ -575,7 +579,7 @@ contract BattleManager is ReentrancyGuard {
             uint256(
                 keccak256(
                     abi.encode(
-                        rounds[ctx.roundId].randomness,
+                        currentRoundData.randomness,
                         ctx.roundId,
                         ctx.tableId,
                         ctx.groupHash,
@@ -760,7 +764,7 @@ contract BattleManager is ReentrancyGuard {
         return uint256(
             keccak256(
                 abi.encode(
-                    rounds[ctx.roundId].randomness,
+                    currentRoundData.randomness,
                     ctx.roundId,
                     ctx.tableId,
                     ctx.groupHash,
@@ -776,8 +780,8 @@ contract BattleManager is ReentrancyGuard {
         view
         returns (Action memory)
     {
-        if (hasRevealed[roundId][user]) {
-            return revealed[roundId][user];
+        if (roundId == currentRound && revealedRound[user] == roundId) {
+            return revealed[user];
         }
 
         // default fallback if not revealed

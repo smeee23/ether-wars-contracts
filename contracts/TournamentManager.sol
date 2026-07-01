@@ -20,7 +20,7 @@ interface ITournamentBattleManager {
     function getPhase() external view returns (Phase);
     function canEndRound() external view returns (bool);
     function getRoundRandomness(uint256 roundId) external view returns (uint256);
-    function commits(uint256 roundId, address player) external view returns (bytes32);
+    function hasCommitted(address player) external view returns (bool);
     function tableConflictsResolved(uint256 roundId, uint256 tableId) external view returns (bool);
 }
 
@@ -107,8 +107,6 @@ contract TournamentManager is ReentrancyGuard {
     mapping(address => uint256) public expansionsUsed;
     mapping(address => uint256) private expansionClaims;
     mapping(uint256 => address[]) private tablePlayers;
-    mapping(uint256 => mapping(address => bool)) public roundPlayerActive;
-    mapping(uint256 => mapping(address => uint256)) public roundTableOf;
     mapping(uint256 => uint256) public roundRequiredTableCount;
     mapping(uint256 => uint256) public resolvedTableCount;
     mapping(uint256 => uint256) public vrfRequestToRound;
@@ -295,10 +293,7 @@ contract TournamentManager is ReentrancyGuard {
             "not commit phase"
         );
         require(
-            ITournamentBattleManager(battleManager).commits(
-                ITournamentBattleManager(battleManager).currentRound(),
-                msg.sender
-            ) == bytes32(0),
+            !ITournamentBattleManager(battleManager).hasCommitted(msg.sender),
             "already committed"
         );
         uint256 expansionSlot = _claimableExpansionSlot(msg.sender);
@@ -353,7 +348,7 @@ contract TournamentManager is ReentrancyGuard {
 
         roundId = ITournamentBattleManager(battleManager).startNextRound();
         lastStartedRound = roundId;
-        roundRequiredTableCount[roundId] = _snapshotTables(roundId);
+        roundRequiredTableCount[roundId] = _requiredTableCount();
 
         emit RoundStarted(roundId, requestId);
     }
@@ -451,7 +446,6 @@ contract TournamentManager is ReentrancyGuard {
         require(participants.length > 1, "invalid group");
         require(participants.length == paymentColonyIds.length, "colony length");
         require(groupStake > 0, "invalid stake");
-        require(roundPlayerActive[roundId][winner], "winner not in round");
         require(playerInfo[winner].active, "winner inactive");
 
         uint256 resolvedWinnerColony = _resolveActionColony(winner, winnerColonyId);
@@ -461,7 +455,7 @@ contract TournamentManager is ReentrancyGuard {
 
         for (uint256 i = 0; i < participants.length; i++) {
             address loser = participants[i];
-            require(roundPlayerActive[roundId][loser], "participant not in round");
+            require(playerInfo[loser].active, "participant inactive");
 
             if (loser == winner) continue;
 
@@ -836,14 +830,6 @@ contract TournamentManager is ReentrancyGuard {
         return tablePlayers[tableId];
     }
 
-    function getRoundTableOf(uint256 roundId, address player)
-        external
-        view
-        returns (uint256)
-    {
-        return roundTableOf[roundId][player];
-    }
-
     function getActiveTablePlayers(uint256 tableId)
         public
         view
@@ -908,12 +894,7 @@ contract TournamentManager is ReentrancyGuard {
         if (_tournamentId != tournamentId) return false;
         if (attacker == target) return false;
         if (wager == 0) return false;
-        if (!roundPlayerActive[roundId][attacker]) return false;
-        if (!roundPlayerActive[roundId][target]) return false;
-        if (roundTableOf[roundId][attacker] == 0) return false;
-        if (roundTableOf[roundId][attacker] != roundTableOf[roundId][target]) {
-            return false;
-        }
+        if (!_isSameTable(attacker, target)) return false;
         if (!_ownsActiveColony(attacker, sourceColonyId)) return false;
         if (!_ownsActiveColony(target, targetColonyId)) return false;
         if (!_isColonyAvailableForRound(sourceColonyId, roundId)) return false;
@@ -949,16 +930,13 @@ contract TournamentManager is ReentrancyGuard {
         emit TableAssigned(player, tableCount);
     }
 
-    function _snapshotTables(uint256 roundId) internal returns (uint256 requiredTableCount) {
+    function _requiredTableCount() internal view returns (uint256 requiredTableCount) {
         bool[] memory tableSeen = new bool[](tableCount + 1);
 
         for (uint256 i = 0; i < players.length; i++) {
             address player = players[i];
             PlayerInfo memory info = playerInfo[player];
             if (!info.active) continue;
-
-            roundPlayerActive[roundId][player] = true;
-            roundTableOf[roundId][player] = info.tableId;
 
             if (
                 info.tableId != 0 &&
