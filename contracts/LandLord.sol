@@ -73,11 +73,6 @@ contract LandLord is Initializable {
         bool eliminated
     );
 
-    modifier onlyLord() {
-        require(msg.sender == lord, "not lord");
-        _;
-    }
-
     modifier onlyController() {
         require(msg.sender == controller, "not controller");
         _;
@@ -96,10 +91,6 @@ contract LandLord is Initializable {
         resources = startingResources;
 
         emit Initialized(_lord, _controller);
-    }
-
-    function allocateGold(ResourceType resource, uint256 goldAmount) public onlyLord {
-        _allocateGold(resource, goldAmount);
     }
 
     function allocateGoldByController(ResourceType resource, uint256 goldAmount)

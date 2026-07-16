@@ -41,7 +41,7 @@ describe("LandLord resource model", function () {
   });
 
   it("allocates gold 1:1 into each resource", async function () {
-    const { landLord, lord } = await deployLandLord({
+    const { landLord, controller } = await deployLandLord({
       gold: 100,
       food: 1,
       water: 1,
@@ -50,11 +50,11 @@ describe("LandLord resource model", function () {
       army: 1,
     });
 
-    await landLord.connect(lord).allocateGold(FOOD, 10);
-    await landLord.connect(lord).allocateGold(WATER, 20);
-    await landLord.connect(lord).allocateGold(OXYGEN, 15);
-    await landLord.connect(lord).allocateGold(SHELTER, 25);
-    await landLord.connect(lord).allocateGold(ARMY, 30);
+    await landLord.connect(controller).allocateGoldByController(FOOD, 10);
+    await landLord.connect(controller).allocateGoldByController(WATER, 20);
+    await landLord.connect(controller).allocateGoldByController(OXYGEN, 15);
+    await landLord.connect(controller).allocateGoldByController(SHELTER, 25);
+    await landLord.connect(controller).allocateGoldByController(ARMY, 30);
 
     const resources = await landLord.getResources();
     expect(resources.gold.toString()).to.equal("0");
@@ -66,7 +66,7 @@ describe("LandLord resource model", function () {
   });
 
   it("does not expose deprecated replenish wrappers", async function () {
-    const { landLord, lord } = await deployLandLord({
+    const { landLord, controller } = await deployLandLord({
       gold: 20,
       food: 1,
       water: 1,
@@ -75,7 +75,7 @@ describe("LandLord resource model", function () {
       army: 1,
     });
 
-    await landLord.connect(lord).allocateGold(FOOD, 2);
+    await landLord.connect(controller).allocateGoldByController(FOOD, 2);
 
     const resources = await landLord.getResources();
     expect(resources.gold.toString()).to.equal("18");

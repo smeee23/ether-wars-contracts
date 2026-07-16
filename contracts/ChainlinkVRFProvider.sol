@@ -15,6 +15,9 @@ interface ITournamentRandomnessReceiver {
  *      TournamentManager.
  */
 contract ChainlinkVRFProvider {
+    error UnknownRequest(uint256 requestId);
+    error MissingRandomWord();
+    error RequestAlreadyForwarded(uint256 requestId);
     address public immutable tournamentManager;
     address public immutable coordinator;
     bytes32 public immutable keyHash;
@@ -23,6 +26,7 @@ contract ChainlinkVRFProvider {
     uint32 public immutable callbackGasLimit;
 
     mapping(uint256 => uint256) public roundByRequestId;
+    mapping(uint256 => bool) public requestForwarded;
 
     event RandomnessRequested(uint256 indexed roundId, uint256 indexed requestId);
     event RandomnessFulfilled(uint256 indexed requestId, uint256 randomness);
@@ -81,8 +85,11 @@ contract ChainlinkVRFProvider {
         uint256 requestId,
         uint256[] memory randomWords
     ) external onlyCoordinator {
-        require(roundByRequestId[requestId] != 0, "unknown request");
-        require(randomWords.length > 0, "missing random word");
+        if (roundByRequestId[requestId] == 0) revert UnknownRequest(requestId);
+        if (randomWords.length == 0) revert MissingRandomWord();
+        if (requestForwarded[requestId]) {
+            revert RequestAlreadyForwarded(requestId);
+        }
 
         uint256 randomness = randomWords[0];
         ITournamentRandomnessReceiver(tournamentManager).receiveRandomness(
@@ -90,6 +97,7 @@ contract ChainlinkVRFProvider {
             randomness
         );
 
+        requestForwarded[requestId] = true;
         emit RandomnessFulfilled(requestId, randomness);
     }
 }

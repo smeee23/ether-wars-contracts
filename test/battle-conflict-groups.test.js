@@ -22,13 +22,19 @@ describe("BattleManager connected conflict groups", function () {
     const admin = signers[0];
     const players = signers.slice(1, playerCount + 1);
 
-    const NoYieldAdapter = await ethers.getContractFactory("NoYieldAdapter");
+    const StETH = await ethers.getContractFactory("StETHMock");
+    const StETHYieldAdapter = await ethers.getContractFactory("StETHYieldAdapter");
     const LandLord = await ethers.getContractFactory("LandLord");
     const TournamentManager = await ethers.getContractFactory("TournamentManager");
     const BattleManager = await ethers.getContractFactory("BattleManager");
     const VRFProviderMock = await ethers.getContractFactory("VRFProviderMock");
 
-    const yieldAdapter = await NoYieldAdapter.deploy();
+    const stETH = await StETH.deploy();
+    await stETH.deployed();
+    const yieldAdapter = await StETHYieldAdapter.deploy(
+      stETH.address,
+      ethers.constants.AddressZero
+    );
     await yieldAdapter.deployed();
 
     const landLordImplementation = await LandLord.deploy();
@@ -55,7 +61,7 @@ describe("BattleManager connected conflict groups", function () {
     for (const player of players) {
       await tournament
         .connect(player)
-        .register({ value: ethers.utils.parseEther("1") });
+        .registerWithETH({ value: ethers.utils.parseEther("1") });
     }
 
     await tournament.startTournament();
@@ -67,6 +73,9 @@ describe("BattleManager connected conflict groups", function () {
       battleManager,
       vrfProvider,
       LandLord,
+      queuedAllocations: new Map(),
+      queuedExpansions: new Set(),
+      committedPlans: new Map(),
     };
   }
 
@@ -78,25 +87,35 @@ describe("BattleManager connected conflict groups", function () {
 
   async function requestRoundRandomness(ctx, roundId, randomness = ctx.roundRandomness || 12345) {
     const requestId = await ctx.vrfProvider.nextRequestId();
-    await ctx.tournament.requestRoundRandomness(roundId);
+    await ctx.tournament.requestRoundRandomness();
     await ctx.vrfProvider.fulfill(requestId, randomness);
   }
 
   async function commitAction(ctx, player, roundId, action, saltLabel) {
-    const salt = ethers.utils.formatBytes32String(saltLabel);
+    const salt = ethers.utils.keccak256(ethers.utils.toUtf8Bytes(saltLabel));
     await normalizeAction(ctx, player, action);
-    const hash = await ctx.battleManager.computeCommitHash(
+    const plan = {
+      action: {
+        actionType: action.actionType,
+        target: action.target,
+        amount: action.amount,
+        sourceColonyId: action.sourceColonyId,
+        targetColonyId: action.targetColonyId,
+      },
+      allocations: ctx.queuedAllocations.get(player.address) || [],
+      claimExpansion: ctx.queuedExpansions.has(player.address),
+    };
+    const hash = await ctx.battleManager.computePlanCommitHash(
       player.address,
-      action.actionType,
-      action.target,
-      action.amount,
-      action.sourceColonyId,
-      action.targetColonyId,
+      plan,
       salt,
       roundId
     );
 
-    await ctx.battleManager.connect(player).commit(hash);
+    await ctx.battleManager.connect(player).commitPlan(hash);
+    ctx.committedPlans.set(player.address, plan);
+    ctx.queuedAllocations.delete(player.address);
+    ctx.queuedExpansions.delete(player.address);
     return salt;
   }
 
@@ -111,7 +130,10 @@ describe("BattleManager connected conflict groups", function () {
   }
 
   async function revealAction(ctx, player, action, salt) {
-    await ctx.battleManager.connect(player).reveal(action, salt);
+    action;
+    await ctx.battleManager
+      .connect(player)
+      .revealPlan(ctx.committedPlans.get(player.address), salt);
   }
 
   async function expectRevert(promise, reason) {
@@ -309,15 +331,31 @@ describe("BattleManager connected conflict groups", function () {
 
   async function fundColonySurvival(ctx, player) {
     const colonies = await ctx.tournament.getPlayerColonies(player.address);
+    const allocations = ctx.queuedAllocations.get(player.address) || [];
     for (const colony of colonies) {
-      for (let resource = 0; resource <= 4; resource++) {
-        await ctx.tournament.connect(player).allocateColonyGold(
-          colony.toNumber(),
-          resource,
-          6
-        );
-      }
+      allocations.push({
+        colonyId: colony.toNumber(),
+        food: 6,
+        water: 6,
+        oxygen: 6,
+        shelter: 6,
+        army: 6,
+      });
     }
+    ctx.queuedAllocations.set(player.address, allocations);
+  }
+
+  function queueAllocation(ctx, player, colonyId, values) {
+    const allocations = ctx.queuedAllocations.get(player.address) || [];
+    allocations.push({
+      colonyId,
+      food: values.food || 0,
+      water: values.water || 0,
+      oxygen: values.oxygen || 0,
+      shelter: values.shelter || 0,
+      army: values.army || 0,
+    });
+    ctx.queuedAllocations.set(player.address, allocations);
   }
 
   async function fundAllSurvival(ctx) {
@@ -330,17 +368,21 @@ describe("BattleManager connected conflict groups", function () {
 
   async function fundMilestoneAttacker(ctx, player) {
     const colonyId = await firstColonyOf(ctx, player);
-    for (let resource = 0; resource <= 3; resource++) {
-      await ctx.tournament.connect(player).allocateColonyGold(colonyId, resource, 20);
-    }
-    await ctx.tournament.connect(player).allocateColonyGold(colonyId, 4, 900);
+    ctx.queuedAllocations.set(player.address, [{
+      colonyId,
+      food: 20,
+      water: 20,
+      oxygen: 20,
+      shelter: 20,
+      army: 900,
+    }]);
   }
 
   async function activateFirstExpansion(ctx, expandPlayers, nextRoundRandomness = 12345) {
     await fundAllSurvival(ctx);
     const setupRoundId = await startRound(ctx);
     for (const player of expandPlayers) {
-      await ctx.tournament.connect(player).expand();
+      ctx.queuedExpansions.add(player.address);
     }
     await finishEmptyRound(ctx, setupRoundId);
     return startRound(ctx, nextRoundRandomness);
@@ -348,11 +390,14 @@ describe("BattleManager connected conflict groups", function () {
 
   async function preparePlayerForElimination(ctx, player) {
     const colonies = await ctx.tournament.getPlayerColonies(player.address);
-    await ctx.tournament.connect(player).allocateColonyGold(
-      colonies[0].toNumber(),
-      0,
-      990
-    );
+    ctx.queuedAllocations.set(player.address, [{
+      colonyId: colonies[0].toNumber(),
+      food: 990,
+      water: 0,
+      oxygen: 0,
+      shelter: 0,
+      army: 0,
+    }]);
   }
 
   async function unlockExpansionMilestone(ctx) {
@@ -385,10 +430,32 @@ describe("BattleManager connected conflict groups", function () {
   }
 
   async function finishEmptyRound(ctx, roundId) {
+    const reveals = [];
+    for (const player of ctx.players) {
+      const info = await ctx.tournament.playerInfo(player.address);
+      if (!info.active) continue;
+      if (
+        !ctx.queuedAllocations.has(player.address) &&
+        !ctx.queuedExpansions.has(player.address)
+      ) continue;
+      const salt = await commitAction(
+        ctx,
+        player,
+        roundId,
+        defend(),
+        `plan-${roundId}-${player.address}`
+      );
+      reveals.push({ player, salt });
+    }
     await revealPhase();
+    for (const item of reveals) {
+      await revealAction(ctx, item.player, defend(), item.salt);
+    }
     await resolvePhase();
     await resolveTable(ctx, roundId);
     await ctx.tournament.endBattleRound();
+    ctx.queuedAllocations.clear();
+    ctx.queuedExpansions.clear();
   }
 
   async function landLordOf(ctx, player) {
@@ -455,14 +522,14 @@ describe("BattleManager connected conflict groups", function () {
     const roundId = await startRound(ctx);
 
     await expectRevert(
-      ctx.tournament.requestRoundRandomness(roundId),
-      "reveal still open"
+      ctx.tournament.requestRoundRandomness(),
+      "VrfRevealStillOpen"
     );
 
     await revealPhase();
     await expectRevert(
-      ctx.tournament.requestRoundRandomness(roundId),
-      "reveal still open"
+      ctx.tournament.requestRoundRandomness(),
+      "VrfRevealStillOpen"
     );
   });
 
@@ -786,7 +853,7 @@ describe("BattleManager connected conflict groups", function () {
     const bColonies = await ctx.tournament.getPlayerColonies(b.address);
     const buildColony = bColonies[0].toNumber();
     const attackedColony = bColonies[1].toNumber();
-    await ctx.tournament.connect(b).allocateColonyGold(attackedColony, 4, 30);
+    queueAllocation(ctx, b, attackedColony, { army: 30 });
 
     const aAction = attack(b.address, 10);
     aAction.targetColonyId = attackedColony;
@@ -819,62 +886,50 @@ describe("BattleManager connected conflict groups", function () {
     expect(bEvent.args.sourceColonyId.toString()).to.equal("0");
   });
 
-  it("starts each player with one colony and allows first expansion in round one", async function () {
+  it("creates a committed expansion only during resolution and activates it next round", async function () {
     const ctx = await deployGame(2);
     const [a] = ctx.players;
-    await startRound(ctx);
+    await fundAllSurvival(ctx);
+    const roundId = await startRound(ctx);
 
     const colonies = await ctx.tournament.getPlayerColonies(a.address);
     expect(colonies.length).to.equal(1);
-    expect((await ctx.tournament.activeColonyCount(a.address)).toString()).to.equal("1");
     expect((await ctx.tournament.maxUnlockedExpansions()).toString()).to.equal("1");
 
-    await ctx.tournament.connect(a).expand();
+    ctx.queuedExpansions.add(a.address);
+    const salt = await commitAction(ctx, a, roundId, defend(), "expand-a");
+    expect((await ctx.tournament.getPlayerColonies(a.address)).length).to.equal(1);
+
+    await revealPhase();
+    await revealAction(ctx, a, defend(), salt);
+    expect((await ctx.tournament.getPlayerColonies(a.address)).length).to.equal(1);
+    await resolvePhase();
+    await resolveTable(ctx, roundId);
+
     expect((await ctx.tournament.getPlayerColonies(a.address)).length).to.equal(2);
+    const expandedColonies = await ctx.tournament.getPlayerColonies(a.address);
+    const expanded = await ctx.tournament.colonyInfo(expandedColonies[1]);
+    expect(expanded.createdRound.toString()).to.equal(roundId.toString());
   });
 
-  it("allows first and milestone expansions during commit and keeps them pending until the next round", async function () {
+  it("allows a milestone expansion only through a committed round plan", async function () {
     const ctx = await deployGame(4);
     const { survivors } = await unlockExpansionMilestone(ctx);
-    const [a, c] = survivors;
+    const [a] = survivors;
 
     expect((await ctx.tournament.expansionUnlockRound()).toString()).to.equal("1");
     expect((await ctx.tournament.activePlayerCount()).toString()).to.equal("2");
 
     const roundId = await startRound(ctx);
-    const tableBefore = await ctx.tournament.getPlayerTable(a.address);
-    await ctx.tournament.connect(a).expand();
-    await ctx.tournament.connect(a).expand();
-    const tableAfter = await ctx.tournament.getPlayerTable(a.address);
-    const colonies = await ctx.tournament.getPlayerColonies(a.address);
-    const pendingColony = colonies[1].toNumber();
-
-    expect(tableAfter.toString()).to.equal(tableBefore.toString());
-    expect(colonies.length).to.equal(3);
-    expect((await ctx.tournament.expansionsUsed(a.address)).toString()).to.equal("2");
-    expect((await ctx.tournament.activeColonyCount(a.address)).toString()).to.equal("3");
-
-    await expectRevert(
-      ctx.tournament.connect(a).allocateColonyGold(pendingColony, 4, 1),
-      "pending"
-    );
-
-    const cAction = attack(a.address, 1);
-    cAction.targetColonyId = pendingColony;
-    const cSalt = await commitAction(ctx, c, roundId, cAction, "c");
+    ctx.queuedExpansions.add(a.address);
+    const salt = await commitAction(ctx, a, roundId, defend(), "milestone-a");
 
     await revealPhase();
-    await expectRevert(
-      revealAction(ctx, c, cAction, cSalt),
-      "invalid attack"
-    );
+    await revealAction(ctx, a, defend(), salt);
     await resolvePhase();
     await resolveTable(ctx, roundId);
-    await ctx.tournament.endBattleRound();
-
-    const nextRoundId = await startRound(ctx);
-    expect(nextRoundId).to.equal(roundId + 1);
-    await ctx.tournament.connect(a).allocateColonyGold(pendingColony, 4, 1);
+    expect((await ctx.tournament.getPlayerColonies(a.address)).length).to.equal(2);
+    expect((await ctx.tournament.expansionsUsed(a.address)).toString()).to.equal("1");
   });
 
   it("closes the milestone expansion window after three rounds", async function () {
@@ -890,35 +945,66 @@ describe("BattleManager connected conflict groups", function () {
 
     const expiredRoundId = await startRound(ctx);
     expect(expiredRoundId).to.equal(5);
-    await expectRevert(
-      ctx.tournament.connect(a).expand(),
-      "expansion locked"
-    );
+    ctx.queuedExpansions.add(a.address);
+    const salt = await commitAction(ctx, a, expiredRoundId, defend(), "expired");
+    await revealPhase();
+    await expectRevert(revealAction(ctx, a, defend(), salt), "invalid plan");
   });
 
-  it("transfers gold between active colonies only during commit phase", async function () {
+  it("does not expose direct allocation or inter-colony transfer functions", async function () {
+    const ctx = await deployGame(2);
+    expect(ctx.tournament.allocateColonyGold).to.equal(undefined);
+    expect(ctx.tournament.transferGoldBetweenColonies).to.equal(undefined);
+    const landLord = await landLordOf(ctx, ctx.players[0]);
+    expect(landLord.allocateGold).to.equal(undefined);
+  });
+
+  it("keeps committed allocations unapplied until table resolution", async function () {
     const ctx = await deployGame(2);
     const [a] = ctx.players;
-    await activateFirstExpansion(ctx, [a]);
+    const colonyId = await firstColonyOf(ctx, a);
+    const landLord = await landLordOfColony(ctx, colonyId);
+    const roundId = await startRound(ctx);
+    queueAllocation(ctx, a, colonyId, { food: 10, army: 5 });
+    const salt = await commitAction(ctx, a, roundId, defend(), "hidden-allocation");
 
-    const colonies = await ctx.tournament.getPlayerColonies(a.address);
-    const first = colonies[0].toNumber();
-    const second = colonies[1].toNumber();
-    await ctx.tournament.connect(a).transferGoldBetweenColonies(first, second, 25);
+    expect((await landLord.getResources()).food.toString()).to.equal("0");
+    await revealPhase();
+    await revealAction(ctx, a, defend(), salt);
+    expect((await landLord.getResources()).food.toString()).to.equal("0");
 
-    const firstLandLord = await landLordOfColony(ctx, first);
-    const secondLandLord = await landLordOfColony(ctx, second);
-    expect((await firstLandLord.getGold()).toString()).to.equal("945");
-    expect((await secondLandLord.getGold()).toString()).to.equal("1025");
+    await resolvePhase();
+    await resolveTable(ctx, roundId);
+    const resources = await landLord.getResources();
+    expect(resources.gold.toString()).to.equal("985");
+    expect(resources.food.toString()).to.equal("10");
+    expect(resources.army.toString()).to.equal("5");
+  });
+
+  it("rejects a plan whose allocation and wager exceed isolated colony gold", async function () {
+    const ctx = await deployGame(2);
+    const [a, b] = ctx.players;
+    const colonyId = await firstColonyOf(ctx, a);
+    const roundId = await startRound(ctx);
+    queueAllocation(ctx, a, colonyId, { food: 901 });
+    const action = attack(b.address, 100);
+    const salt = await commitAction(ctx, a, roundId, action, "overspend");
 
     await revealPhase();
-    let reverted = false;
-    try {
-      await ctx.tournament.connect(a).transferGoldBetweenColonies(first, second, 1);
-    } catch (error) {
-      reverted = error.message.includes("not commit phase");
-    }
-    expect(reverted).to.equal(true);
+    await expectRevert(revealAction(ctx, a, action, salt), "invalid plan");
+  });
+
+  it("rejects duplicate colony allocations in one plan", async function () {
+    const ctx = await deployGame(2);
+    const [a] = ctx.players;
+    const colonyId = await firstColonyOf(ctx, a);
+    const roundId = await startRound(ctx);
+    queueAllocation(ctx, a, colonyId, { food: 1 });
+    queueAllocation(ctx, a, colonyId, { water: 1 });
+    const salt = await commitAction(ctx, a, roundId, defend(), "duplicate-colony");
+
+    await revealPhase();
+    await expectRevert(revealAction(ctx, a, defend(), salt), "invalid plan");
   });
 
   it("eliminates only the attacked colony while another colony keeps the player active", async function () {
@@ -939,14 +1025,16 @@ describe("BattleManager connected conflict groups", function () {
 
     const bColonies = await ctx.tournament.getPlayerColonies(b.address);
     const attackedColony = bColonies[0].toNumber();
-    await ctx.tournament.connect(b).allocateColonyGold(attackedColony, 0, 960);
+    queueAllocation(ctx, b, attackedColony, { food: 960 });
 
     const aAction = attack(b.address, 35);
     aAction.targetColonyId = attackedColony;
     const aSalt = await commitAction(ctx, a, roundId, aAction, "a");
+    const bSalt = await commitAction(ctx, b, roundId, defend(), "b");
 
     await revealPhase();
     await revealAction(ctx, a, aAction, aSalt);
+    await revealAction(ctx, b, defend(), bSalt);
     await resolvePhase();
     await resolveTable(ctx, roundId);
 
@@ -965,7 +1053,7 @@ describe("BattleManager connected conflict groups", function () {
     const aColonies = await ctx.tournament.getPlayerColonies(a.address);
     const first = aColonies[0].toNumber();
     const second = aColonies[1].toNumber();
-    await ctx.tournament.connect(a).allocateColonyGold(second, 4, 30);
+    queueAllocation(ctx, a, second, { army: 30 });
 
     const aAction = attack(b.address, 10);
     aAction.sourceColonyId = first;
@@ -997,10 +1085,9 @@ describe("BattleManager connected conflict groups", function () {
     const [a, b] = ctx.players;
     const aLandLord = await landLordOf(ctx, a);
     const aColonyId = await firstColonyOf(ctx, a);
-    await ctx.tournament.connect(a).allocateColonyGold(aColonyId, 4, 5);
-
     const randomness = 12345;
     const roundId = await startRound(ctx, randomness);
+    queueAllocation(ctx, a, aColonyId, { army: 5 });
     const aAction = attack(b.address, 10);
     const aSalt = await commitAction(ctx, a, roundId, aAction, "a");
 
@@ -1033,7 +1120,7 @@ describe("BattleManager connected conflict groups", function () {
     const bColonies = await ctx.tournament.getPlayerColonies(b.address);
     const first = bColonies[0].toNumber();
     const second = bColonies[1].toNumber();
-    await ctx.tournament.connect(b).allocateColonyGold(second, 4, 30);
+    queueAllocation(ctx, b, second, { army: 30 });
 
     const aAction = attack(b.address, 10);
     aAction.targetColonyId = first;
@@ -1133,16 +1220,18 @@ describe("BattleManager connected conflict groups", function () {
     const [a, b] = ctx.players;
     const bLandLord = await landLordOf(ctx, b);
     const bColonyId = await firstColonyOf(ctx, b);
-    await ctx.tournament.connect(b).allocateColonyGold(bColonyId, 0, 990);
+    queueAllocation(ctx, b, bColonyId, { food: 990 });
 
     const seed = attackerWinningSeed(1, 1, a, b, 85, 120);
     const roundId = await startRound(ctx, seed);
 
     const aAction = attack(b.address, 35);
     const aSalt = await commitAction(ctx, a, roundId, aAction, "a");
+    const bSalt = await commitAction(ctx, b, roundId, defend(), "b");
 
     await revealPhase();
     await revealAction(ctx, a, aAction, aSalt);
+    await revealAction(ctx, b, defend(), bSalt);
     await resolvePhase();
 
     await requestRoundRandomness(ctx, roundId);
@@ -1215,16 +1304,30 @@ describe("BattleManager connected conflict groups", function () {
     const aLandLord = await landLordOfColony(ctx, aColonyId);
     const bLandLord = await landLordOfColony(ctx, bColonyId);
 
-    for (let resource = 0; resource <= 4; resource++) {
-      await ctx.tournament.connect(a).allocateColonyGold(aColonyId, resource, 20);
-      await ctx.tournament.connect(b).allocateColonyGold(bColonyId, resource, 6);
-    }
+    queueAllocation(ctx, a, aColonyId, {
+      food: 20,
+      water: 20,
+      oxygen: 20,
+      shelter: 20,
+      army: 20,
+    });
+    queueAllocation(ctx, b, bColonyId, {
+      food: 6,
+      water: 6,
+      oxygen: 6,
+      shelter: 6,
+      army: 6,
+    });
 
     const seed = penaltySeed(1, a, aColonyId, 0);
     const roundId = await startRound(ctx, seed);
     const requestIdBefore = await ctx.vrfProvider.nextRequestId();
+    const aSalt = await commitAction(ctx, a, roundId, defend(), "penalty-a");
+    const bSalt = await commitAction(ctx, b, roundId, defend(), "penalty-b");
 
     await revealPhase();
+    await revealAction(ctx, a, defend(), aSalt);
+    await revealAction(ctx, b, defend(), bSalt);
     await resolvePhase();
     await resolveTable(ctx, roundId);
     await ctx.tournament.endBattleRound();
@@ -1273,7 +1376,7 @@ describe("BattleManager connected conflict groups", function () {
 
     const aColonyId = await firstColonyOf(ctx, a);
     const aLandLord = await landLordOfColony(ctx, aColonyId);
-    await ctx.tournament.connect(a).allocateColonyGold(aColonyId, 0, 999);
+    queueAllocation(ctx, a, aColonyId, { food: 999 });
 
     const seed = defenderWinningSeed(1, 1, a, b);
     const roundId = await startRound(ctx, seed);

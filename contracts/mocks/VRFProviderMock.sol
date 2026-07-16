@@ -6,6 +6,7 @@ interface ITournamentRandomnessReceiver {
 }
 
 contract VRFProviderMock {
+    error UnknownRequest(uint256 requestId);
     address public immutable tournamentManager;
     uint256 public nextRequestId = 1;
     mapping(uint256 => uint256) public requestRound;
@@ -21,7 +22,15 @@ contract VRFProviderMock {
     }
 
     function fulfill(uint256 requestId, uint256 randomness) external {
-        require(requestRound[requestId] != 0, "unknown request");
+        if (requestRound[requestId] == 0) revert UnknownRequest(requestId);
+        _forward(requestId, randomness);
+    }
+
+    function forceFulfill(uint256 requestId, uint256 randomness) external {
+        _forward(requestId, randomness);
+    }
+
+    function _forward(uint256 requestId, uint256 randomness) internal {
         ITournamentRandomnessReceiver(tournamentManager).receiveRandomness(
             requestId,
             randomness

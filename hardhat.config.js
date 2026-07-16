@@ -50,5 +50,10 @@ module.exports = {
       accounts,
       chainId: 137,
     },
+    mainnet: {
+      url: process.env.MAINNET_RPC_URL || "",
+      accounts,
+      chainId: 1,
+    },
   },
 };

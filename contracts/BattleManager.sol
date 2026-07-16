@@ -3,8 +3,21 @@ pragma solidity 0.8.20;
 
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import {GameTypes} from "./libraries/GameTypes.sol";
 
 interface IBattleTournamentManager {
+    function validateRoundPlan(
+        address player,
+        uint256 roundId,
+        GameTypes.RoundPlan calldata plan
+    ) external view returns (bool);
+
+    function applyRoundPlan(
+        address player,
+        uint256 roundId,
+        GameTypes.RoundPlan calldata plan
+    ) external;
+
     function isValidAttackForRound(
         uint256 tournamentId,
         uint256 roundId,
@@ -58,7 +71,7 @@ contract BattleManager is ReentrancyGuard {
 
     struct RevealData {
         address player;
-        Action action;
+        GameTypes.RoundPlan plan;
         bytes32 salt;
         bytes signature;
     }
@@ -69,23 +82,9 @@ contract BattleManager is ReentrancyGuard {
         Resolve
     }
 
-    enum ActionType {
-        ATTACK,
-        DEFEND,
-        BUILD
-    }
-
     // =========================
     // STRUCTS
     // =========================
-
-    struct Action {
-        ActionType actionType;
-        address target;
-        uint256 amount; // gold wager for ATTACK; must be zero otherwise
-        uint256 sourceColonyId;
-        uint256 targetColonyId;
-    }
 
     struct RoundData {
         uint256 commitEnd;
@@ -98,7 +97,7 @@ contract BattleManager is ReentrancyGuard {
         uint256 tableId;
         bytes32 groupHash;
         address[] tablePlayers;
-        Action[] actions;
+        GameTypes.Action[] actions;
         bool[] inGroup;
     }
 
@@ -117,8 +116,10 @@ contract BattleManager is ReentrancyGuard {
     mapping(address => uint256) public commitRound;
 
     // active revealed action per user
-    mapping(address => Action) public revealed;
+    mapping(address => GameTypes.Action) public revealed;
     mapping(address => uint256) public revealedRound;
+    mapping(address => GameTypes.ColonyAllocation[]) private revealedAllocations;
+    mapping(address => bool) public revealedExpansionClaim;
 
     mapping(uint256 => uint256) public tableResolvedRound;
 
@@ -142,7 +143,7 @@ contract BattleManager is ReentrancyGuard {
         uint256 indexed tableId,
         bytes32 indexed groupHash,
         address player,
-        ActionType actionType,
+        GameTypes.ActionType actionType,
         address target,
         uint256 sourceColonyId,
         uint256 targetColonyId,
@@ -226,10 +227,6 @@ contract BattleManager is ReentrancyGuard {
         return currentRoundData.randomness;
     }
 
-    function hasCommitted(address player) external view returns (bool) {
-        return commitRound[player] == currentRound;
-    }
-
     function tableConflictsResolved(uint256 roundId, uint256 tableId)
         external
         view
@@ -242,7 +239,7 @@ contract BattleManager is ReentrancyGuard {
     // COMMIT
     // =========================
 
-    function commit(bytes32 hash)
+    function commitPlan(bytes32 hash)
         external
         inPhase(Phase.Commit)
     {
@@ -258,37 +255,26 @@ contract BattleManager is ReentrancyGuard {
     // REVEAL
     // =========================
 
-    function reveal(
-        Action calldata action,
-        bytes32 salt
-    )
+    function revealPlan(GameTypes.RoundPlan calldata plan, bytes32 salt)
         external
         inPhase(Phase.Reveal)
     {
-        bytes32 expected = computeCommitHash(
+        bytes32 expected = computePlanCommitHash(
             msg.sender,
-            action.actionType,
-            action.target,
-            action.amount,
-            action.sourceColonyId,
-            action.targetColonyId,
+            plan,
             salt,
             currentRound
         );
 
         require(commitRound[msg.sender] == currentRound, "invalid reveal");
         require(expected == commits[msg.sender], "invalid reveal");
-        _recordReveal(msg.sender, action);
+        _recordReveal(msg.sender, plan);
     }
 
     function _processReveal(RevealData calldata r) internal {
-        bytes32 expected = computeCommitHash(
+        bytes32 expected = computePlanCommitHash(
             r.player,
-            r.action.actionType,
-            r.action.target,
-            r.action.amount,
-            r.action.sourceColonyId,
-            r.action.targetColonyId,
+            r.plan,
             r.salt,
             currentRound
         );
@@ -302,7 +288,7 @@ contract BattleManager is ReentrancyGuard {
 
         require(commitRound[signer] == currentRound, "invalid reveal");
         require(expected == commits[signer], "invalid reveal");
-        _recordReveal(signer, r.action);
+        _recordReveal(signer, r.plan);
     }
 
     function batchReveal(RevealData[] calldata reveals)
@@ -347,8 +333,9 @@ contract BattleManager is ReentrancyGuard {
         require(players.length > 0, "empty table");
         require(players.length <= 9, "table too large");
 
-        Action[] memory actions = new Action[](players.length);
+        GameTypes.Action[] memory actions = new GameTypes.Action[](players.length);
         for (uint256 i = 0; i < players.length; i++) {
+            _applyRevealedPlan(roundId, players[i]);
             actions[i] = _getActionOrDefault(roundId, players[i]);
         }
 
@@ -367,17 +354,27 @@ contract BattleManager is ReentrancyGuard {
     // INTERNAL HELPERS
     // =========================
 
-    function _recordReveal(address player, Action calldata action) internal {
+    function _recordReveal(address player, GameTypes.RoundPlan calldata plan) internal {
         require(revealedRound[player] != currentRound, "already revealed");
+        require(
+            IBattleTournamentManager(tournamentManager).validateRoundPlan(
+                player,
+                currentRound,
+                plan
+            ),
+            "invalid plan"
+        );
 
-        if (action.actionType == ActionType.ATTACK) {
+        GameTypes.Action calldata action = plan.action;
+
+        if (action.actionType == GameTypes.ActionType.ATTACK) {
             _recordAttackReveal(player, action);
-        } else if (action.actionType == ActionType.BUILD) {
+        } else if (action.actionType == GameTypes.ActionType.BUILD) {
             require(action.target == address(0), "build target");
             require(action.amount == 0, "build wager");
             require(action.sourceColonyId == 0, "build source colony");
             require(action.targetColonyId == 0, "build target colony");
-        } else if (action.actionType == ActionType.DEFEND) {
+        } else if (action.actionType == GameTypes.ActionType.DEFEND) {
             require(action.target == address(0), "defend target");
             require(action.amount == 0, "non-attack wager");
             require(action.sourceColonyId == 0, "defend source colony");
@@ -387,12 +384,17 @@ contract BattleManager is ReentrancyGuard {
         }
 
         revealed[player] = action;
+        delete revealedAllocations[player];
+        for (uint256 i = 0; i < plan.allocations.length; i++) {
+            revealedAllocations[player].push(plan.allocations[i]);
+        }
+        revealedExpansionClaim[player] = plan.claimExpansion;
         revealedRound[player] = currentRound;
 
         emit Revealed(player, currentRound);
     }
 
-    function _recordAttackReveal(address attacker, Action calldata action)
+    function _recordAttackReveal(address attacker, GameTypes.Action calldata action)
         internal
     {
         require(
@@ -418,11 +420,33 @@ contract BattleManager is ReentrancyGuard {
         );
     }
 
+    function _applyRevealedPlan(uint256 roundId, address player) internal {
+        if (revealedRound[player] != roundId) return;
+
+        GameTypes.ColonyAllocation[] storage stored = revealedAllocations[player];
+        GameTypes.ColonyAllocation[] memory allocations =
+            new GameTypes.ColonyAllocation[](stored.length);
+        for (uint256 i = 0; i < stored.length; i++) {
+            allocations[i] = stored[i];
+        }
+
+        GameTypes.RoundPlan memory plan = GameTypes.RoundPlan({
+            action: revealed[player],
+            allocations: allocations,
+            claimExpansion: revealedExpansionClaim[player]
+        });
+        IBattleTournamentManager(tournamentManager).applyRoundPlan(
+            player,
+            roundId,
+            plan
+        );
+    }
+
     function _resolveComponent(
         uint256 roundId,
         uint256 tableId,
         address[] memory players,
-        Action[] memory actions,
+        GameTypes.Action[] memory actions,
         bool[] memory visited,
         uint256 start
     ) internal {
@@ -452,7 +476,10 @@ contract BattleManager is ReentrancyGuard {
 
         bool hasAttack;
         for (uint256 i = 0; i < players.length; i++) {
-            if (inGroup[i] && actions[i].actionType == ActionType.ATTACK) {
+            if (
+                inGroup[i] &&
+                actions[i].actionType == GameTypes.ActionType.ATTACK
+            ) {
                 hasAttack = true;
                 break;
             }
@@ -494,7 +521,7 @@ contract BattleManager is ReentrancyGuard {
             participants[cursor] = ctx.tablePlayers[i];
             paymentColonyIds[cursor] = _paymentColonyFor(ctx, i);
             if (
-                ctx.actions[i].actionType == ActionType.ATTACK &&
+                ctx.actions[i].actionType == GameTypes.ActionType.ATTACK &&
                 ctx.actions[i].amount > groupStake
             ) {
                 groupStake = ctx.actions[i].amount;
@@ -552,7 +579,10 @@ contract BattleManager is ReentrancyGuard {
         uint256[] memory scores
     ) internal {
         for (uint256 i = 0; i < participants.length; i++) {
-            Action memory action = _getActionOrDefault(ctx.roundId, participants[i]);
+            GameTypes.Action memory action = _getActionOrDefault(
+                ctx.roundId,
+                participants[i]
+            );
             emit ConflictParticipant(
                 ctx.roundId,
                 ctx.tableId,
@@ -562,7 +592,9 @@ contract BattleManager is ReentrancyGuard {
                 action.target,
                 action.sourceColonyId,
                 action.targetColonyId,
-                action.actionType == ActionType.ATTACK ? action.amount : 0,
+                action.actionType == GameTypes.ActionType.ATTACK
+                    ? action.amount
+                    : 0,
                 scores[i]
             );
         }
@@ -574,7 +606,7 @@ contract BattleManager is ReentrancyGuard {
         returns (uint256)
     {
         address player = ctx.tablePlayers[playerIndex];
-        Action memory action = ctx.actions[playerIndex];
+        GameTypes.Action memory action = ctx.actions[playerIndex];
         uint256 score = BASE_SCORE + (
             uint256(
                 keccak256(
@@ -590,8 +622,8 @@ contract BattleManager is ReentrancyGuard {
         );
         uint256 armyColonyId = action.sourceColonyId;
         if (
-            action.actionType == ActionType.DEFEND ||
-            action.actionType == ActionType.BUILD
+            action.actionType == GameTypes.ActionType.DEFEND ||
+            action.actionType == GameTypes.ActionType.BUILD
         ) {
             uint256 incomingTargetColonyId = _incomingTargetColonyFor(ctx, player);
             if (incomingTargetColonyId != 0) {
@@ -603,16 +635,22 @@ contract BattleManager is ReentrancyGuard {
             armyColonyId
         );
 
-        if (action.actionType == ActionType.ATTACK) {
+        if (action.actionType == GameTypes.ActionType.ATTACK) {
             uint256 targetIndex = _indexOf(ctx.tablePlayers, action.target);
             if (targetIndex < ctx.tablePlayers.length) {
-                if (ctx.actions[targetIndex].actionType == ActionType.BUILD) {
+                if (
+                    ctx.actions[targetIndex].actionType ==
+                    GameTypes.ActionType.BUILD
+                ) {
                     score += ATTACK_VS_BUILD_BONUS;
-                } else if (ctx.actions[targetIndex].actionType == ActionType.DEFEND) {
+                } else if (
+                    ctx.actions[targetIndex].actionType ==
+                    GameTypes.ActionType.DEFEND
+                ) {
                     score -= ATTACK_VS_DEFEND_PENALTY;
                 }
             }
-        } else if (action.actionType == ActionType.DEFEND) {
+        } else if (action.actionType == GameTypes.ActionType.DEFEND) {
             if (_incomingAttackCount(
                 player,
                 ctx.tablePlayers,
@@ -629,13 +667,13 @@ contract BattleManager is ReentrancyGuard {
     function _incomingAttackCount(
         address player,
         address[] memory tablePlayers,
-        Action[] memory actions,
+        GameTypes.Action[] memory actions,
         bool[] memory inGroup
     ) internal pure returns (uint256 count) {
         for (uint256 i = 0; i < tablePlayers.length; i++) {
             if (
                 inGroup[i] &&
-                actions[i].actionType == ActionType.ATTACK &&
+                actions[i].actionType == GameTypes.ActionType.ATTACK &&
                 actions[i].target == player
             ) {
                 count++;
@@ -645,10 +683,10 @@ contract BattleManager is ReentrancyGuard {
 
     function _applyUncontestedBuilds(
         address[] memory tablePlayers,
-        Action[] memory actions
+        GameTypes.Action[] memory actions
     ) internal {
         for (uint256 i = 0; i < tablePlayers.length; i++) {
-            if (actions[i].actionType != ActionType.BUILD) continue;
+            if (actions[i].actionType != GameTypes.ActionType.BUILD) continue;
             if (_hasIncomingAttack(tablePlayers[i], tablePlayers, actions)) continue;
 
             IBattleTournamentManager(tournamentManager).applyBuildAction(
@@ -661,11 +699,11 @@ contract BattleManager is ReentrancyGuard {
     function _hasIncomingAttack(
         address player,
         address[] memory tablePlayers,
-        Action[] memory actions
+        GameTypes.Action[] memory actions
     ) internal pure returns (bool) {
         for (uint256 i = 0; i < tablePlayers.length; i++) {
             if (
-                actions[i].actionType == ActionType.ATTACK &&
+                actions[i].actionType == GameTypes.ActionType.ATTACK &&
                 actions[i].target == player
             ) {
                 return true;
@@ -675,12 +713,14 @@ contract BattleManager is ReentrancyGuard {
         return false;
     }
 
-    function _hasAttackEdge(Action memory action, address target)
+    function _hasAttackEdge(GameTypes.Action memory action, address target)
         internal
         pure
         returns (bool)
     {
-        return action.actionType == ActionType.ATTACK && action.target == target;
+        return
+            action.actionType == GameTypes.ActionType.ATTACK &&
+            action.target == target;
     }
 
     function _paymentColonyFor(ConflictContext memory ctx, uint256 playerIndex)
@@ -688,8 +728,10 @@ contract BattleManager is ReentrancyGuard {
         pure
         returns (uint256)
     {
-        Action memory action = ctx.actions[playerIndex];
-        if (action.actionType == ActionType.ATTACK) return action.sourceColonyId;
+        GameTypes.Action memory action = ctx.actions[playerIndex];
+        if (action.actionType == GameTypes.ActionType.ATTACK) {
+            return action.sourceColonyId;
+        }
 
         address player = ctx.tablePlayers[playerIndex];
         uint256 selectedColonyId = _incomingTargetColonyFor(ctx, player);
@@ -708,7 +750,7 @@ contract BattleManager is ReentrancyGuard {
         for (uint256 i = 0; i < ctx.tablePlayers.length; i++) {
             if (
                 ctx.inGroup[i] &&
-                ctx.actions[i].actionType == ActionType.ATTACK &&
+                ctx.actions[i].actionType == GameTypes.ActionType.ATTACK &&
                 ctx.actions[i].target == player
             ) {
                 uint256 attackWager = ctx.actions[i].amount;
@@ -778,15 +820,15 @@ contract BattleManager is ReentrancyGuard {
     function _getActionOrDefault(uint256 roundId, address user)
         internal
         view
-        returns (Action memory)
+        returns (GameTypes.Action memory)
     {
         if (roundId == currentRound && revealedRound[user] == roundId) {
             return revealed[user];
         }
 
         // default fallback if not revealed
-        return Action({
-            actionType: ActionType.DEFEND,
+        return GameTypes.Action({
+            actionType: GameTypes.ActionType.DEFEND,
             target: address(0),
             amount: 0,
             sourceColonyId: 0,
@@ -798,13 +840,9 @@ contract BattleManager is ReentrancyGuard {
     // HASH HELPER (FRONTEND)
     // =========================
 
-    function computeCommitHash(
+    function computePlanCommitHash(
         address player,
-        ActionType actionType,
-        address target,
-        uint256 wager,
-        uint256 sourceColonyId,
-        uint256 targetColonyId,
+        GameTypes.RoundPlan calldata plan,
         bytes32 salt,
         uint256 roundId
     ) public view returns (bytes32) {
@@ -813,11 +851,7 @@ contract BattleManager is ReentrancyGuard {
                 tournamentId,
                 roundId,
                 player,
-                actionType,
-                target,
-                wager,
-                sourceColonyId,
-                targetColonyId,
+                plan,
                 salt,
                 block.chainid,
                 address(this)
