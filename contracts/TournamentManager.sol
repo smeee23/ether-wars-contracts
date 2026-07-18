@@ -92,11 +92,11 @@ contract TournamentManager is ReentrancyGuard {
     }
 
     struct PenaltyCandidate {
-        uint256 totalResources;
-        uint256[5] resourceBalances;
-        uint256[5] weakestColonyIds;
-        uint256[5] weakestColonyBalances;
-        uint256[5] weakestColonyTotals;
+        uint256 totalResource;
+        uint256 resourceBalance;
+        uint256 weakestColonyId;
+        uint256 weakestColonyBalance;
+        uint256 weakestColonyTotal;
     }
 
     error VrfConfigurationFrozen();
@@ -485,7 +485,7 @@ contract TournamentManager is ReentrancyGuard {
 
         _applyWeightedResourcePenalties(roundId, randomness);
 
-        _rebalanceTables(randomness);
+        _rebalanceTables();
     }
 
     function receiveRandomness(uint256 requestId, uint256 randomness)
@@ -1180,8 +1180,8 @@ contract TournamentManager is ReentrancyGuard {
                 if (!playerInfo[player].active) continue;
 
                 PenaltyCandidate memory candidate =
-                    _buildPenaltyCandidate(player, roundId);
-                if (candidate.totalResources == 0) continue;
+                    _buildPenaltyCandidate(player, roundId, selectedResource);
+                if (candidate.totalResource == 0) continue;
                 candidates[candidateCount++] = candidate;
             }
 
@@ -1196,7 +1196,7 @@ contract TournamentManager is ReentrancyGuard {
         }
     }
 
-    function _buildPenaltyCandidate(address player, uint256 roundId)
+    function _buildPenaltyCandidate(address player, uint256 roundId, LandLord.ResourceType selectedResource)
         internal
         view
         returns (PenaltyCandidate memory candidate)
@@ -1214,35 +1214,29 @@ contract TournamentManager is ReentrancyGuard {
             LandLord.Resources memory balances = LandLord(colony.landLord)
                 .getResources();
             uint256 colonyTotal = _totalColonyResources(balances);
-            candidate.totalResources += colonyTotal;
+            candidate.totalResource += colonyTotal;
 
-            for (
-                uint256 resource = 0;
-                resource <= uint256(LandLord.ResourceType.Army);
-                resource++
+            uint256 balance = _resourceBalance(
+                balances,
+                selectedResource
+            );
+            candidate.resourceBalance += balance;
+
+            uint256 weakestId = candidate.weakestColonyId;
+            if (
+                weakestId == 0 ||
+                balance * candidate.weakestColonyTotal <
+                    candidate.weakestColonyBalance * colonyTotal ||
+                (
+                    balance * candidate.weakestColonyTotal ==
+                        candidate.weakestColonyBalance *
+                            colonyTotal &&
+                    colonyId < weakestId
+                )
             ) {
-                uint256 balance = _resourceBalance(
-                    balances,
-                    LandLord.ResourceType(resource)
-                );
-                candidate.resourceBalances[resource] += balance;
-
-                uint256 weakestId = candidate.weakestColonyIds[resource];
-                if (
-                    weakestId == 0 ||
-                    balance * candidate.weakestColonyTotals[resource] <
-                        candidate.weakestColonyBalances[resource] * colonyTotal ||
-                    (
-                        balance * candidate.weakestColonyTotals[resource] ==
-                            candidate.weakestColonyBalances[resource] *
-                                colonyTotal &&
-                        colonyId < weakestId
-                    )
-                ) {
-                    candidate.weakestColonyIds[resource] = colonyId;
-                    candidate.weakestColonyBalances[resource] = balance;
-                    candidate.weakestColonyTotals[resource] = colonyTotal;
-                }
+                candidate.weakestColonyId = colonyId;
+                candidate.weakestColonyBalance = balance;
+                candidate.weakestColonyTotal = colonyTotal;
             }
         }
     }
@@ -1255,14 +1249,13 @@ contract TournamentManager is ReentrancyGuard {
         PenaltyCandidate[] memory candidates,
         uint256 candidateCount
     ) internal {
-        uint256 resourceIndex = uint256(resource);
         uint256[] memory weights = new uint256[](candidateCount);
         uint256 totalWeight;
 
         for (uint256 i = 0; i < candidateCount; i++) {
             uint256 ratioBps =
-                candidates[i].resourceBalances[resourceIndex] * BASIS_POINTS /
-                candidates[i].totalResources;
+                candidates[i].resourceBalance * BASIS_POINTS /
+                candidates[i].totalResource;
             uint256 weight = PENALTY_WEIGHT_NUMERATOR /
                 (PENALTY_RATIO_SMOOTHING_BPS + ratioBps);
             weights[i] = weight;
@@ -1292,7 +1285,7 @@ contract TournamentManager is ReentrancyGuard {
         }
 
         PenaltyCandidate memory selected = candidates[selectedIndex];
-        uint256 colonyId = selected.weakestColonyIds[resourceIndex];
+        uint256 colonyId = selected.weakestColonyId;
         if (colonyId == 0) return;
 
         uint256 penaltyBps = MIN_RESOURCE_PENALTY_BPS +
@@ -1313,7 +1306,7 @@ contract TournamentManager is ReentrancyGuard {
             );
         uint256 penaltyAmount =
             (
-                selected.weakestColonyBalances[resourceIndex] * penaltyBps +
+                selected.weakestColonyBalance * penaltyBps +
                 BASIS_POINTS -
                 1
             ) / BASIS_POINTS;
@@ -1347,55 +1340,105 @@ contract TournamentManager is ReentrancyGuard {
     }
 
     /**
-     * @dev Rebuilds tables between rounds. This is intentionally simple and
-     *      bounded by total registered players. For very large tournaments this
-     *      should become a batched rebalance using the same assignment rules.
+     * @dev Keeps surviving players at their current tables whenever possible.
+     *      Excess highest-numbered tables are dissolved, then tables are
+     *      balanced only while the largest and smallest sizes differ by more
+     *      than three players.
      */
-    function _rebalanceTables(uint256 seed) internal {
-        address[] memory activeList = new address[](activePlayers);
-        uint256 cursor;
+    function _rebalanceTables() internal {
+        _compactTables();
 
-        for (uint256 i = 0; i < players.length; i++) {
-            address player = players[i];
-            if (playerInfo[player].active) {
-                activeList[cursor++] = player;
-            }
-        }
+        uint256 targetTableCount =
+            (activePlayers + MAX_TABLE_SIZE - 1) / MAX_TABLE_SIZE;
+        _consolidateTables(targetTableCount);
+        _balanceTables();
+    }
 
-        for (uint256 i = activeList.length; i > 1; i--) {
-            uint256 j = uint256(keccak256(abi.encode(seed, i))) % i;
-            address tmp = activeList[i - 1];
-            activeList[i - 1] = activeList[j];
-            activeList[j] = tmp;
-        }
-
-        uint256 oldTableCount = tableCount;
-        for (uint256 i = 1; i <= oldTableCount; i++) {
-            delete tablePlayers[i];
-        }
-
-        tableCount = (activeList.length + MAX_TABLE_SIZE - 1) / MAX_TABLE_SIZE;
-        if (activeList.length <= MAX_TABLE_SIZE) {
-            tableCount = 1;
-        }
-
+    function _compactTables() internal {
         for (uint256 tableId = 1; tableId <= tableCount; tableId++) {
-            emit TableCreated(tableId);
+            address[] storage assignedPlayers = tablePlayers[tableId];
+            uint256 activeCursor;
+
+            for (uint256 i = 0; i < assignedPlayers.length; i++) {
+                address player = assignedPlayers[i];
+                if (!playerInfo[player].active) {
+                    playerInfo[player].tableId = 0;
+                    continue;
+                }
+
+                if (activeCursor != i) {
+                    assignedPlayers[activeCursor] = player;
+                }
+                activeCursor++;
+            }
+
+            while (assignedPlayers.length > activeCursor) {
+                assignedPlayers.pop();
+            }
+        }
+    }
+
+    function _consolidateTables(uint256 targetTableCount) internal {
+        if (targetTableCount >= tableCount) return;
+
+        uint256 destinationTableId = 1;
+        for (
+            uint256 sourceTableId = tableCount;
+            sourceTableId > targetTableCount;
+            sourceTableId--
+        ) {
+            address[] storage sourcePlayers = tablePlayers[sourceTableId];
+            while (sourcePlayers.length > 0) {
+                while (
+                    tablePlayers[destinationTableId].length >= MAX_TABLE_SIZE
+                ) {
+                    destinationTableId++;
+                }
+
+                address player = sourcePlayers[sourcePlayers.length - 1];
+                sourcePlayers.pop();
+                tablePlayers[destinationTableId].push(player);
+                playerInfo[player].tableId = destinationTableId;
+                emit PlayerMovedTable(
+                    player,
+                    sourceTableId,
+                    destinationTableId
+                );
+            }
         }
 
-        for (uint256 i = 0; i < activeList.length; i++) {
-            address player = activeList[i];
-            uint256 previousTable = playerInfo[player].tableId;
-            uint256 newTable = (i / MAX_TABLE_SIZE) + 1;
+        tableCount = targetTableCount;
+    }
 
-            tablePlayers[newTable].push(player);
-            playerInfo[player].tableId = newTable;
+    function _balanceTables() internal {
+        if (tableCount <= 1) return;
 
-            if (previousTable != newTable) {
-                emit PlayerMovedTable(player, previousTable, newTable);
-            } else {
-                emit TableAssigned(player, newTable);
+        while (true) {
+            uint256 smallestTableId = 1;
+            uint256 largestTableId = 1;
+            uint256 smallestSize = tablePlayers[1].length;
+            uint256 largestSize = smallestSize;
+
+            for (uint256 tableId = 2; tableId <= tableCount; tableId++) {
+                uint256 size = tablePlayers[tableId].length;
+                if (size < smallestSize) {
+                    smallestSize = size;
+                    smallestTableId = tableId;
+                }
+                if (size > largestSize) {
+                    largestSize = size;
+                    largestTableId = tableId;
+                }
             }
+
+            if (largestSize - smallestSize <= 3) return;
+
+            address[] storage largestTable = tablePlayers[largestTableId];
+            address player = largestTable[largestTable.length - 1];
+            largestTable.pop();
+            tablePlayers[smallestTableId].push(player);
+            playerInfo[player].tableId = smallestTableId;
+            emit PlayerMovedTable(player, largestTableId, smallestTableId);
         }
     }
 }

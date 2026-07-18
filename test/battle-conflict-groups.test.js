@@ -505,6 +505,42 @@ describe("BattleManager connected conflict groups", function () {
     ctx.queuedExpansions.clear();
   }
 
+  async function finishAllTablesRound(ctx, randomness = 12345) {
+    const roundId = await startRound(ctx, randomness);
+    const reveals = [];
+
+    for (const player of ctx.players) {
+      const info = await ctx.tournament.playerInfo(player.address);
+      if (!info.active || !ctx.queuedAllocations.has(player.address)) continue;
+
+      const salt = await commitAction(
+        ctx,
+        player,
+        roundId,
+        defend(),
+        `all-tables-${roundId}-${player.address}`
+      );
+      reveals.push({ player, salt });
+    }
+
+    await revealPhase();
+    for (const item of reveals) {
+      await revealAction(ctx, item.player, defend(), item.salt);
+    }
+    await resolvePhase();
+    await requestRoundRandomness(ctx, roundId, randomness);
+
+    const requiredTableCount = (
+      await ctx.battleManager.roundRequiredTableCount(roundId)
+    ).toNumber();
+    for (let tableId = 1; tableId <= requiredTableCount; tableId++) {
+      await ctx.tournament.resolveTableConflicts(tableId, roundId);
+    }
+    await ctx.tournament.endBattleRound();
+
+    return roundId;
+  }
+
   async function landLordOf(ctx, player) {
     const colonyId = await firstColonyOf(ctx, player);
     const colony = await ctx.tournament.colonyInfo(colonyId);
@@ -698,6 +734,56 @@ describe("BattleManager connected conflict groups", function () {
     await ctx.tournament.endBattleRound();
 
     expect((await ctx.tournament.lastEndedRound()).toString()).to.equal(String(roundId));
+  });
+
+  it("keeps tables stable once their size difference is at most three", async function () {
+    const ctx = await deployGame(11);
+    await fundAllSurvival(ctx);
+    await finishAllTablesRound(ctx, 111);
+
+    const firstTable = await ctx.tournament.getTablePlayers(1);
+    const secondTable = await ctx.tournament.getTablePlayers(2);
+    expect(firstTable.length).to.equal(7);
+    expect(secondTable.length).to.equal(4);
+
+    await finishAllTablesRound(ctx, 222);
+
+    expect(await ctx.tournament.getTablePlayers(1)).to.deep.equal(firstTable);
+    expect(await ctx.tournament.getTablePlayers(2)).to.deep.equal(secondTable);
+  });
+
+  it("dissolves excess tables and moves only players from those tables", async function () {
+    const ctx = await deployGame(10);
+    await fundAllSurvival(ctx);
+
+    for (const player of ctx.players.slice(0, 2)) {
+      const colonyId = await firstColonyOf(ctx, player);
+      ctx.queuedAllocations.set(player.address, [{
+        colonyId,
+        food: 990,
+        water: 0,
+        oxygen: 0,
+        shelter: 0,
+        army: 0,
+      }]);
+    }
+
+    const originalSecondTable = await ctx.tournament.getTablePlayers(2);
+    await finishAllTablesRound(ctx, 333);
+
+    expect((await ctx.tournament.tableCount()).toString()).to.equal("1");
+    expect(await ctx.tournament.getTablePlayers(2)).to.deep.equal([]);
+
+    const survivingPlayers = ctx.players.slice(2).map((player) => player.address);
+    expect(await ctx.tournament.getTablePlayers(1)).to.have.members(
+      survivingPlayers
+    );
+    expect(
+      (await ctx.tournament.getPlayerTable(originalSecondTable[0])).toString()
+    ).to.equal("1");
+    expect(
+      (await ctx.tournament.getPlayerTable(ctx.players[0].address)).toString()
+    ).to.equal("0");
   });
 
   it("does not allow unresolved conflicts to be skipped by starting the next round", async function () {
