@@ -50,11 +50,7 @@ describe("LandLord resource model", function () {
       army: 1,
     });
 
-    await landLord.connect(controller).allocateGoldByController(FOOD, 10);
-    await landLord.connect(controller).allocateGoldByController(WATER, 20);
-    await landLord.connect(controller).allocateGoldByController(OXYGEN, 15);
-    await landLord.connect(controller).allocateGoldByController(SHELTER, 25);
-    await landLord.connect(controller).allocateGoldByController(ARMY, 30);
+    await landLord.connect(controller).allocateResources(10, 20, 15, 25, 30);
 
     const resources = await landLord.getResources();
     expect(resources.gold.toString()).to.equal("0");
@@ -63,6 +59,55 @@ describe("LandLord resource model", function () {
     expect(resources.oxygen.toString()).to.equal("16");
     expect(resources.shelter.toString()).to.equal("26");
     expect(resources.army.toString()).to.equal("31");
+  });
+
+  it("reverts a bulk allocation atomically when total gold is insufficient", async function () {
+    const { landLord, controller } = await deployLandLord({
+      gold: 99,
+      food: 1,
+      water: 1,
+      oxygen: 1,
+      shelter: 1,
+      army: 1,
+    });
+
+    try {
+      await landLord.connect(controller).allocateResources(10, 20, 15, 25, 30);
+      expect.fail("expected insufficient-gold allocation to revert");
+    } catch (error) {
+      expect(error.message).to.include("insufficient gold");
+    }
+
+    const resources = await landLord.getResources();
+    expect(resources.gold.toString()).to.equal("99");
+    expect(resources.food.toString()).to.equal("1");
+    expect(resources.water.toString()).to.equal("1");
+    expect(resources.oxygen.toString()).to.equal("1");
+    expect(resources.shelter.toString()).to.equal("1");
+    expect(resources.army.toString()).to.equal("1");
+  });
+
+  it("calculates the capped army-ratio bonus from colony resources", async function () {
+    const { landLord } = await deployLandLord({
+      gold: 500,
+      food: 100,
+      water: 100,
+      oxygen: 100,
+      shelter: 100,
+      army: 100,
+    });
+
+    expect((await landLord.getArmyBonus()).toString()).to.equal("2");
+
+    const { landLord: allArmy } = await deployLandLord({
+      gold: 0,
+      food: 0,
+      water: 0,
+      oxygen: 0,
+      shelter: 0,
+      army: 100,
+    });
+    expect((await allArmy.getArmyBonus()).toString()).to.equal("20");
   });
 
   it("does not expose deprecated replenish wrappers", async function () {
@@ -75,11 +120,12 @@ describe("LandLord resource model", function () {
       army: 1,
     });
 
-    await landLord.connect(controller).allocateGoldByController(FOOD, 2);
+    await landLord.connect(controller).allocateResources(2, 0, 0, 0, 0);
 
     const resources = await landLord.getResources();
     expect(resources.gold.toString()).to.equal("18");
     expect(resources.food.toString()).to.equal("3");
+    expect(landLord.allocateGoldByController).to.equal(undefined);
     expect(landLord.spendGoldToReplenish).to.equal(undefined);
     expect(landLord.replenishResource).to.equal(undefined);
   });

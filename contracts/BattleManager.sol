@@ -122,6 +122,8 @@ contract BattleManager is ReentrancyGuard {
     mapping(address => bool) public revealedExpansionClaim;
 
     mapping(uint256 => uint256) public tableResolvedRound;
+    mapping(uint256 => uint256) public roundRequiredTableCount;
+    mapping(uint256 => uint256) public resolvedTableCount;
 
     // =========================
     // EVENTS
@@ -191,12 +193,14 @@ contract BattleManager is ReentrancyGuard {
     // ROUND CONTROL
     // =========================
 
-    function startNextRound()
+    function startNextRound(uint256 requiredTableCount)
         external
         onlyTournamentManager
         returns (uint256 roundId)
     {
+        require(requiredTableCount > 0, "no tables");
         currentRound++;
+        roundRequiredTableCount[currentRound] = requiredTableCount;
 
         currentRoundData = RoundData({
             commitEnd: block.timestamp + COMMIT_DURATION,
@@ -219,7 +223,13 @@ contract BattleManager is ReentrancyGuard {
     }
 
     function canEndRound() external view returns (bool) {
-        return currentRound != 0 && getPhase() == Phase.Resolve;
+        return (
+            currentRound != 0 &&
+            getPhase() == Phase.Resolve &&
+            currentRoundData.randomness != 0 &&
+            resolvedTableCount[currentRound] ==
+                roundRequiredTableCount[currentRound]
+        );
     }
 
     function getRoundRandomness(uint256 roundId) external view returns (uint256) {
@@ -323,7 +333,15 @@ contract BattleManager is ReentrancyGuard {
         nonReentrant
     {
         require(roundId == currentRound, "round mismatch");
+        require(
+            tableId > 0 && tableId <= roundRequiredTableCount[roundId],
+            "invalid table"
+        );
         require(tableResolvedRound[tableId] != roundId, "table resolved");
+        require(
+            resolvedTableCount[roundId] < roundRequiredTableCount[roundId],
+            "all tables resolved"
+        );
 
         uint256 randomness = currentRoundData.randomness;
         require(randomness != 0, "randomness not set");
@@ -340,7 +358,6 @@ contract BattleManager is ReentrancyGuard {
         }
 
         bool[] memory visited = new bool[](players.length);
-        tableResolvedRound[tableId] = roundId;
 
         for (uint256 i = 0; i < players.length; i++) {
             if (visited[i]) continue;
@@ -348,6 +365,8 @@ contract BattleManager is ReentrancyGuard {
         }
 
         _applyUncontestedBuilds(players, actions);
+        tableResolvedRound[tableId] = roundId;
+        resolvedTableCount[roundId]++;
     }
 
     // =========================

@@ -39,9 +39,8 @@ contract LandLord is Initializable {
     uint256 public constant POPULATION_UPKEEP_INTERVAL = 10;
     uint256 public constant GOLD_ALLOCATION_RATE = 1;
     uint256 public constant BASIS_POINTS = 10_000;
-    uint256 public constant PENALTY_CHANCE_BPS = 1_000;
-    uint256 private constant PENALTY_DOMAIN = uint256(keccak256("resource-penalty"));
-
+    uint256 public constant ARMY_BONUS_BPS_STEP = 500;
+    uint256 public constant MAX_ARMY_BONUS = 20;
     address public lord;
     address public controller;
     uint256 public supportCredits;
@@ -93,11 +92,25 @@ contract LandLord is Initializable {
         emit Initialized(_lord, _controller);
     }
 
-    function allocateGoldByController(ResourceType resource, uint256 goldAmount)
+    function allocateResources(
+        uint256 food,
+        uint256 water,
+        uint256 oxygen,
+        uint256 shelter,
+        uint256 army
+    )
         external
         onlyController
     {
-        _allocateGold(resource, goldAmount);
+        uint256 totalGold = food + water + oxygen + shelter + army;
+        if (totalGold == 0) return;
+
+        _spendGold(totalGold);
+        _addAllocatedResource(ResourceType.Food, food);
+        _addAllocatedResource(ResourceType.Water, water);
+        _addAllocatedResource(ResourceType.Oxygen, oxygen);
+        _addAllocatedResource(ResourceType.Shelter, shelter);
+        _addAllocatedResource(ResourceType.Army, army);
     }
 
     function applyRoundUpkeep(address player, uint256 roundId)
@@ -124,44 +137,26 @@ contract LandLord is Initializable {
         emit GoldAwarded(amount);
     }
 
-    function applyRandomResourcePenalties(
+    function applyResourcePenalty(
         uint256 roundId,
-        uint256 randomness,
         uint256 colonyId,
+        ResourceType resource,
         uint256 amount
     )
         external
         onlyController
+        returns (uint256 applied)
     {
-        for (uint256 resource = 0; resource <= uint256(ResourceType.Army); resource++) {
-            uint256 roll = uint256(
-                keccak256(
-                    abi.encode(
-                        randomness,
-                        roundId,
-                        lord,
-                        colonyId,
-                        resource,
-                        PENALTY_DOMAIN
-                    )
-                )
-            ) % BASIS_POINTS;
-            if (roll >= PENALTY_CHANCE_BPS) continue;
-
-            uint256 applied = _applyResourcePenalty(
-                ResourceType(resource),
-                amount
+        applied = _applyResourcePenalty(resource, amount);
+        if (applied > 0) {
+            emit ResourcePenaltyApplied(
+                roundId,
+                lord,
+                colonyId,
+                resource,
+                amount,
+                applied
             );
-            if (applied > 0) {
-                emit ResourcePenaltyApplied(
-                    roundId,
-                    lord,
-                    colonyId,
-                    ResourceType(resource),
-                    amount,
-                    applied
-                );
-            }
         }
     }
 
@@ -287,6 +282,20 @@ contract LandLord is Initializable {
         return resources.army;
     }
 
+    function getArmyBonus() external view returns (uint256) {
+        uint256 total = resources.gold +
+            resources.food +
+            resources.water +
+            resources.oxygen +
+            resources.shelter +
+            resources.army;
+        if (total == 0) return 0;
+
+        uint256 armyShareBps = (resources.army * BASIS_POINTS) / total;
+        uint256 armyBonus = armyShareBps / ARMY_BONUS_BPS_STEP;
+        return armyBonus > MAX_ARMY_BONUS ? MAX_ARMY_BONUS : armyBonus;
+    }
+
     function _spendGold(uint256 amount) internal {
         require(amount > 0, "invalid amount");
         require(resources.gold >= amount, "insufficient gold");
@@ -294,15 +303,17 @@ contract LandLord is Initializable {
         emit GoldSpent(amount);
     }
 
-    function _allocateGold(ResourceType resource, uint256 goldAmount) internal {
-        _spendGold(goldAmount);
+    function _addAllocatedResource(ResourceType resource, uint256 goldAmount)
+        internal
+    {
+        if (goldAmount == 0) return;
         uint256 allocated = goldAmount * GOLD_ALLOCATION_RATE;
 
         if (resource == ResourceType.Food) resources.food += allocated;
         else if (resource == ResourceType.Water) resources.water += allocated;
         else if (resource == ResourceType.Oxygen) resources.oxygen += allocated;
         else if (resource == ResourceType.Shelter) resources.shelter += allocated;
-        else if (resource == ResourceType.Army) resources.army += allocated;
+        else resources.army += allocated;
 
         emit ResourceAllocated(resource, goldAmount, allocated);
     }
