@@ -96,11 +96,11 @@ describe("TournamentManager VRF timeout and retry", function () {
       },
       allocations: [{
         colonyId,
-        food: 6,
-        water: 6,
-        oxygen: 6,
-        shelter: 6,
-        army: 6,
+        food: 60,
+        water: 60,
+        oxygen: 60,
+        shelter: 60,
+        army: 60,
       }],
       claimExpansion: false,
     };

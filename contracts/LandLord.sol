@@ -33,10 +33,10 @@ contract LandLord is Initializable {
         uint256 attackPower;
     }
 
-    uint256 public constant RESOURCE_UPKEEP = 3;
+    uint256 public constant RESOURCE_UPKEEP = 15;
     uint256 public constant POPULATION_BASE = 10;
     uint256 public constant POPULATION_GROWTH_PER_ROUND = 1;
-    uint256 public constant POPULATION_UPKEEP_INTERVAL = 10;
+    uint256 public constant POPULATION_UPKEEP_INTERVAL = 3;
     uint256 public constant GOLD_ALLOCATION_RATE = 1;
     uint256 public constant BASIS_POINTS = 10_000;
     uint256 public constant ARMY_BONUS_BPS_STEP = 500;
@@ -216,7 +216,7 @@ contract LandLord is Initializable {
     }
 
     function effectiveRoundForSupport(uint256 roundId) public view returns (uint256) {
-        uint256 supportOffset = supportCredits * 2;
+        uint256 supportOffset = supportCredits;
         if (supportOffset >= roundId) return 0;
         return roundId - supportOffset;
     }
@@ -345,7 +345,7 @@ contract LandLord is Initializable {
 
     function _supportPressure(uint256 roundId) internal view returns (uint256) {
         uint256 effectiveRound = effectiveRoundForSupport(roundId);
-        return 2 + (effectiveRound / POPULATION_UPKEEP_INTERVAL);
+        return 3 + (effectiveRound / POPULATION_UPKEEP_INTERVAL);
     }
 
 }

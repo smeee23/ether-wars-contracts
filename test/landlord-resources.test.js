@@ -133,11 +133,11 @@ describe("LandLord resource model", function () {
   it("derives population from round number and checks support without draining resources", async function () {
     const { landLord, controller, lord } = await deployLandLord({
       gold: 1,
-      food: 20,
-      water: 20,
-      oxygen: 20,
-      shelter: 20,
-      army: 20,
+      food: 100,
+      water: 100,
+      oxygen: 100,
+      shelter: 100,
+      army: 100,
     });
 
     expect(await landLord.isEliminatedByResources()).to.equal(false);
@@ -149,11 +149,11 @@ describe("LandLord resource model", function () {
 
     const resources = await landLord.getResources();
     expect(resources.gold.toString()).to.equal("1");
-    expect(resources.food.toString()).to.equal("20");
-    expect(resources.water.toString()).to.equal("20");
-    expect(resources.oxygen.toString()).to.equal("20");
-    expect(resources.shelter.toString()).to.equal("20");
-    expect(resources.army.toString()).to.equal("20");
+    expect(resources.food.toString()).to.equal("100");
+    expect(resources.water.toString()).to.equal("100");
+    expect(resources.oxygen.toString()).to.equal("100");
+    expect(resources.shelter.toString()).to.equal("100");
+    expect(resources.army.toString()).to.equal("100");
     expect(await landLord.isEliminatedByResources()).to.equal(false);
   });
 
@@ -172,14 +172,14 @@ describe("LandLord resource model", function () {
     await landLord.connect(controller).applyBuildAction();
 
     expect((await landLord.supportCredits()).toString()).to.equal("3");
-    expect((await landLord.effectiveRoundForSupport(10)).toString()).to.equal("4");
+    expect((await landLord.effectiveRoundForSupport(10)).toString()).to.equal("7");
 
     const requirements = await landLord.supportRequirements(10);
-    expect(requirements.foodRequired.toString()).to.equal("6");
-    expect(requirements.waterRequired.toString()).to.equal("6");
-    expect(requirements.oxygenRequired.toString()).to.equal("6");
-    expect(requirements.shelterRequired.toString()).to.equal("6");
-    expect(requirements.armyRequired.toString()).to.equal("6");
+    expect(requirements.foodRequired.toString()).to.equal("75");
+    expect(requirements.waterRequired.toString()).to.equal("75");
+    expect(requirements.oxygenRequired.toString()).to.equal("75");
+    expect(requirements.shelterRequired.toString()).to.equal("75");
+    expect(requirements.armyRequired.toString()).to.equal("75");
 
     await landLord.connect(controller).applyRoundUpkeep(lord.address, 10);
 

@@ -17,6 +17,14 @@ const PENALTY_WEIGHT_NUMERATOR = 100000000;
 const PENALTY_DOMAIN = ethers.BigNumber.from(
   ethers.utils.keccak256(ethers.utils.toUtf8Bytes("weighted-resource-penalty"))
 );
+const PENALTY_SELECTION_DOMAIN = ethers.BigNumber.from(
+  ethers.utils.keccak256(
+    ethers.utils.toUtf8Bytes("weighted-resource-penalty-selection")
+  )
+);
+const PENALTY_SIZE_DOMAIN = ethers.BigNumber.from(
+  ethers.utils.keccak256(ethers.utils.toUtf8Bytes("weighted-resource-penalty-size"))
+);
 
 describe("BattleManager connected conflict groups", function () {
   async function deployGame(playerCount) {
@@ -261,6 +269,29 @@ describe("BattleManager connected conflict groups", function () {
     );
   }
 
+  function selectedPenaltyResource(randomness, roundId) {
+    return ethers.BigNumber.from(
+      ethers.utils.keccak256(
+        encoded(
+          ["uint256", "uint256", "uint256"],
+          [randomness, roundId, PENALTY_SELECTION_DOMAIN]
+        )
+      )
+    ).mod(4).toNumber();
+  }
+
+  function penaltyAmount(randomness, roundId, tableId, resource, colonyId, balance) {
+    const penaltyBps = ethers.BigNumber.from(
+      ethers.utils.keccak256(
+        encoded(
+          ["uint256", "uint256", "uint256", "uint256", "uint256", "uint256"],
+          [randomness, roundId, tableId, resource, colonyId, PENALTY_SIZE_DOMAIN]
+        )
+      )
+    ).mod(1501).add(500);
+    return ethers.BigNumber.from(balance).mul(penaltyBps).add(9999).div(10000);
+  }
+
   function weightedPenaltySeed(roundId, tableId, resource, weights, selectedIndex) {
     const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
     const lowerBound = weights
@@ -268,6 +299,7 @@ describe("BattleManager connected conflict groups", function () {
       .reduce((sum, weight) => sum + weight, 0);
     const upperBound = lowerBound + weights[selectedIndex];
     for (let seed = 1; seed < 1000; seed++) {
+      if (selectedPenaltyResource(seed, roundId) !== resource) continue;
       const roll = penaltyRoll(seed, roundId, tableId, resource, totalWeight);
       if (roll >= lowerBound && roll < upperBound) {
         return seed;
@@ -350,11 +382,11 @@ describe("BattleManager connected conflict groups", function () {
     for (const colony of colonies) {
       allocations.push({
         colonyId: colony.toNumber(),
-        food: 6,
-        water: 6,
-        oxygen: 6,
-        shelter: 6,
-        army: 6,
+        food: 60,
+        water: 60,
+        oxygen: 60,
+        shelter: 60,
+        army: 60,
       });
     }
     ctx.queuedAllocations.set(player.address, allocations);
@@ -385,11 +417,11 @@ describe("BattleManager connected conflict groups", function () {
     const colonyId = await firstColonyOf(ctx, player);
     ctx.queuedAllocations.set(player.address, [{
       colonyId,
-      food: 20,
-      water: 20,
-      oxygen: 20,
-      shelter: 20,
-      army: 900,
+      food: 100,
+      water: 100,
+      oxygen: 100,
+      shelter: 100,
+      army: 400,
     }]);
   }
 
@@ -778,7 +810,7 @@ describe("BattleManager connected conflict groups", function () {
 
     const firstLandLord = await landLordOfColony(ctx, first);
     const secondLandLord = await landLordOfColony(ctx, second);
-    expect((await firstLandLord.getGold()).toString()).to.equal("870");
+    expect((await firstLandLord.getGold()).toString()).to.equal("600");
     expect((await secondLandLord.getGold()).toString()).to.equal("1000");
   });
 
@@ -818,7 +850,7 @@ describe("BattleManager connected conflict groups", function () {
 
     const firstLandLord = await landLordOfColony(ctx, first);
     const secondLandLord = await landLordOfColony(ctx, second);
-    expect((await firstLandLord.getGold()).toString()).to.equal("870");
+    expect((await firstLandLord.getGold()).toString()).to.equal("600");
     expect((await secondLandLord.getGold()).toString()).to.equal("1000");
   });
 
@@ -871,8 +903,8 @@ describe("BattleManager connected conflict groups", function () {
     const firstResources = await firstLandLord.getResources();
     const secondResources = await secondLandLord.getResources();
 
-    expect(aResources.gold.toString()).to.equal("970");
-    expect(firstResources.gold.toString()).to.equal("970");
+    expect(aResources.gold.toString()).to.equal("700");
+    expect(firstResources.gold.toString()).to.equal("700");
     expect(secondResources.food.toString()).to.equal("0");
     expect(secondResources.water.toString()).to.equal("0");
     expect(secondResources.oxygen.toString()).to.equal("0");
@@ -880,8 +912,8 @@ describe("BattleManager connected conflict groups", function () {
     expect(secondResources.army.toString()).to.equal("0");
     expect((await firstLandLord.supportCredits()).toString()).to.equal("1");
     expect((await secondLandLord.supportCredits()).toString()).to.equal("1");
-    expect((await firstLandLord.effectiveRoundForSupport(roundId)).toString()).to.equal("0");
-    expect((await secondLandLord.effectiveRoundForSupport(roundId)).toString()).to.equal("0");
+    expect((await firstLandLord.effectiveRoundForSupport(roundId)).toString()).to.equal("1");
+    expect((await secondLandLord.effectiveRoundForSupport(roundId)).toString()).to.equal("1");
   });
 
   it("scores BUILD army from the attacked colony without storing credit when attacked", async function () {
@@ -1070,7 +1102,7 @@ describe("BattleManager connected conflict groups", function () {
 
     const bColonies = await ctx.tournament.getPlayerColonies(b.address);
     const attackedColony = bColonies[0].toNumber();
-    queueAllocation(ctx, b, attackedColony, { food: 960 });
+    queueAllocation(ctx, b, attackedColony, { food: 680 });
 
     const aAction = attack(b.address, 35);
     aAction.targetColonyId = attackedColony;
@@ -1350,21 +1382,21 @@ describe("BattleManager connected conflict groups", function () {
     const bLandLord = await landLordOfColony(ctx, bColonyId);
 
     queueAllocation(ctx, a, aColonyId, {
-      food: 20,
-      water: 20,
-      oxygen: 20,
-      shelter: 20,
-      army: 20,
+      food: 200,
+      water: 45,
+      oxygen: 45,
+      shelter: 45,
+      army: 45,
     });
     queueAllocation(ctx, b, bColonyId, {
-      food: 6,
-      water: 6,
-      oxygen: 6,
-      shelter: 6,
-      army: 6,
+      food: 60,
+      water: 45,
+      oxygen: 45,
+      shelter: 45,
+      army: 45,
     });
 
-    const weights = [penaltyWeight(20, 1000), penaltyWeight(6, 1000)];
+    const weights = [penaltyWeight(200, 1000), penaltyWeight(60, 1000)];
     const seed = weightedPenaltySeed(1, 1, 0, weights, 1);
     const roundId = await startRound(ctx, seed);
     const requestIdBefore = await ctx.vrfProvider.nextRequestId();
@@ -1392,11 +1424,18 @@ describe("BattleManager connected conflict groups", function () {
     expect(requestIdAfter.sub(requestIdBefore).toString()).to.equal("1");
     expect(foodPenalties.length).to.equal(1);
     expect(foodPenalties[0].args.player).to.equal(b.address);
-    expect((await aLandLord.getResources()).food.toString()).to.equal("20");
-    expect((await bLandLord.getResources()).food.toString()).to.equal("5");
+    const expectedPenalty = penaltyAmount(seed, 1, 1, 0, bColonyId, 60);
+    expect(foodPenalties[0].args.requested.toString()).to.equal(
+      expectedPenalty.toString()
+    );
+    expect(expectedPenalty.toNumber()).to.be.within(3, 12);
+    expect((await aLandLord.getResources()).food.toString()).to.equal("200");
+    expect((await bLandLord.getResources()).food.toString()).to.equal(
+      ethers.BigNumber.from(60).sub(expectedPenalty).toString()
+    );
   });
 
-  it("runs one independent resource lottery for each active table", async function () {
+  it("penalizes the same VRF-selected survival resource at each active table", async function () {
     const ctx = await deployGame(10);
     await fundAllSurvival(ctx);
     const tableOne = new Set(await ctx.tournament.getTablePlayers(1));
@@ -1424,24 +1463,29 @@ describe("BattleManager connected conflict groups", function () {
     await ctx.tournament.resolveTableConflicts(2, roundId);
     await ctx.tournament.endBattleRound();
 
-    const foodPenalties = [];
+    const resourcePenalties = [];
     for (const player of ctx.players) {
       const colonyId = await firstColonyOf(ctx, player);
       const landLord = await landLordOfColony(ctx, colonyId);
       const events = await landLord.queryFilter(
         landLord.filters.ResourcePenaltyApplied(roundId, player.address, colonyId)
       );
-      foodPenalties.push(
-        ...events.filter((event) => Number(event.args.resource) === 0)
-      );
+      resourcePenalties.push(...events);
     }
 
-    expect(foodPenalties.length).to.equal(2);
+    const selectedResource = selectedPenaltyResource(777, roundId);
+    expect(selectedResource).to.be.within(0, 3);
+    expect(resourcePenalties.length).to.equal(2);
     expect(
-      foodPenalties.filter((event) => tableOne.has(event.args.player)).length
+      resourcePenalties.every(
+        (event) => Number(event.args.resource) === selectedResource
+      )
+    ).to.equal(true);
+    expect(
+      resourcePenalties.filter((event) => tableOne.has(event.args.player)).length
     ).to.equal(1);
     expect(
-      foodPenalties.filter((event) => tableTwo.has(event.args.player)).length
+      resourcePenalties.filter((event) => tableTwo.has(event.args.player)).length
     ).to.equal(1);
   });
 
@@ -1458,32 +1502,40 @@ describe("BattleManager connected conflict groups", function () {
     const bLandLord = await landLordOfColony(ctx, bColonyId);
     const original = await originalLandLord.getResources();
     const bResources = await bLandLord.getResources();
-    const originalFoodTopUp = Math.max(0, 6 - original.food.toNumber());
-    const bFoodTopUp = Math.max(0, 6 - bResources.food.toNumber());
+    const supportRequirement = 45;
+    const originalFoodTopUp = Math.max(
+      0,
+      supportRequirement - original.food.toNumber()
+    );
+    const bFoodTopUp = Math.max(
+      0,
+      supportRequirement - bResources.food.toNumber()
+    );
 
     queueAllocation(ctx, a, originalColonyId, {
       food: 40 + originalFoodTopUp,
-      water: Math.max(0, 6 - original.water.toNumber()),
-      oxygen: Math.max(0, 6 - original.oxygen.toNumber()),
-      shelter: Math.max(0, 6 - original.shelter.toNumber()),
-      army: Math.max(0, 6 - original.army.toNumber()),
+      water: Math.max(0, supportRequirement - original.water.toNumber()),
+      oxygen: Math.max(0, supportRequirement - original.oxygen.toNumber()),
+      shelter: Math.max(0, supportRequirement - original.shelter.toNumber()),
+      army: Math.max(0, supportRequirement - original.army.toNumber()),
     });
     queueAllocation(ctx, a, expandedColonyId, {
-      food: 6,
-      water: 6,
-      oxygen: 6,
-      shelter: 6,
-      army: 6,
+      food: supportRequirement,
+      water: supportRequirement,
+      oxygen: supportRequirement,
+      shelter: supportRequirement,
+      army: supportRequirement,
     });
     queueAllocation(ctx, b, bColonyId, {
       food: bFoodTopUp,
-      water: Math.max(0, 6 - bResources.water.toNumber()),
-      oxygen: Math.max(0, 6 - bResources.oxygen.toNumber()),
-      shelter: Math.max(0, 6 - bResources.shelter.toNumber()),
-      army: Math.max(0, 6 - bResources.army.toNumber()),
+      water: Math.max(0, supportRequirement - bResources.water.toNumber()),
+      oxygen: Math.max(0, supportRequirement - bResources.oxygen.toNumber()),
+      shelter: Math.max(0, supportRequirement - bResources.shelter.toNumber()),
+      army: Math.max(0, supportRequirement - bResources.army.toNumber()),
     });
 
-    const aFood = original.food.toNumber() + 40 + originalFoodTopUp + 6;
+    const aFood =
+      original.food.toNumber() + 40 + originalFoodTopUp + supportRequirement;
     const bFood = bResources.food.toNumber() + bFoodTopUp;
     ctx.roundRandomness = weightedPenaltySeed(
       roundId,
@@ -1502,8 +1554,20 @@ describe("BattleManager connected conflict groups", function () {
     await resolveTable(ctx, roundId);
     await ctx.tournament.endBattleRound();
 
-    expect((await expandedLandLord.getResources()).food.toString()).to.equal("5");
-    expect((await originalLandLord.getResources()).food.toNumber()).to.be.greaterThan(6);
+    const expandedPenalty = penaltyAmount(
+      ctx.roundRandomness,
+      roundId,
+      1,
+      0,
+      expandedColonyId,
+      supportRequirement
+    );
+    expect((await expandedLandLord.getResources()).food.toString()).to.equal(
+      ethers.BigNumber.from(supportRequirement).sub(expandedPenalty).toString()
+    );
+    expect((await originalLandLord.getResources()).food.toNumber()).to.be.greaterThan(
+      supportRequirement
+    );
   });
 
   it("treats an attacked non-revealer as DEFEND", async function () {
