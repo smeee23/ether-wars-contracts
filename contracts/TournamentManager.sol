@@ -53,6 +53,11 @@ contract TournamentManager is ReentrancyGuard {
     uint256 public constant PENALTY_WEIGHT_NUMERATOR = 100_000_000;
     uint256 public constant MIN_RESOURCE_PENALTY_BPS = 500;
     uint256 public constant MAX_RESOURCE_PENALTY_BPS = 2_000;
+    uint256 private constant MAX_SUPPORT_BATCH_PLAYERS = 25;
+    uint256 private constant MAX_PENALTY_BATCH_TABLES = 10;
+    uint256 private constant MAX_COMPACTION_BATCH_TABLES = 25;
+    uint256 private constant MAX_CONSOLIDATION_BATCH_WORK = 25;
+    uint256 private constant MAX_BALANCE_SCAN_TABLES = 50;
     uint256 private constant RESOURCE_PENALTY_DOMAIN =
         uint256(keccak256("weighted-resource-penalty"));
     uint256 private constant RESOURCE_PENALTY_SELECTION_DOMAIN =
@@ -67,6 +72,17 @@ contract TournamentManager is ReentrancyGuard {
         Registration,
         Active,
         Complete
+    }
+
+    enum FinalizationPhase {
+        None,
+        SupportChecks,
+        ResourcePenalties,
+        TableCompaction,
+        TableConsolidation,
+        BalanceScan,
+        BalanceMove,
+        ReadyToFinalize
     }
 
     struct PlayerInfo {
@@ -99,6 +115,20 @@ contract TournamentManager is ReentrancyGuard {
         uint256 weakestColonyTotal;
     }
 
+    struct RoundFinalization {
+        FinalizationPhase phase;
+        uint256 playerCursor;
+        uint256 tableCursor;
+        uint256 targetTableCount;
+        uint256 sourceTableId;
+        uint256 destinationTableId;
+        uint256 balanceScanCursor;
+        uint256 smallestTableId;
+        uint256 smallestSize;
+        uint256 largestTableId;
+        uint256 largestSize;
+    }
+
     error VrfConfigurationFrozen();
     error InvalidVrfProvider();
     error InvalidVrfRequestTimeout();
@@ -116,6 +146,8 @@ contract TournamentManager is ReentrancyGuard {
     error VrfRequestRoundMismatch(uint256 expectedRound, uint256 actualRound);
     error InvalidVrfRandomness();
     error UnauthorizedVrfProvider();
+    error WrongFinalizationPhase();
+    error InvalidBatchSize();
 
     address public immutable admin;
     address public immutable landLordImplementation;
@@ -152,6 +184,7 @@ contract TournamentManager is ReentrancyGuard {
     mapping(uint256 => bool) public staleVrfRequest;
     mapping(uint256 => RoundVrfState) public roundVrfState;
     mapping(address => uint256) public planAppliedRound;
+    RoundFinalization private roundFinalization;
 
     event PlayerRegistered(address indexed player);
     event ColonyCreated(
@@ -464,28 +497,242 @@ contract TournamentManager is ReentrancyGuard {
         onlyAdmin
         inState(TournamentState.Active)
     {
+        _beginRoundFinalization();
+    }
+
+    function _beginRoundFinalization() internal {
         uint256 roundId = ITournamentBattleManager(battleManager).currentRound();
-        require(roundId != 0, "round");
         require(roundId == lastStartedRound, "round mismatch");
         require(lastEndedRound < roundId, "round ended");
         require(ITournamentBattleManager(battleManager).canEndRound(), "round not over");
+        if (roundFinalization.phase != FinalizationPhase.None) {
+            revert WrongFinalizationPhase();
+        }
 
-        uint256 randomness = ITournamentBattleManager(battleManager)
-            .getRoundRandomness(roundId);
-        require(randomness != 0, "randomness");
-        lastEndedRound = roundId;
-        emit RoundEnded(roundId);
+        roundFinalization = RoundFinalization({
+            phase: FinalizationPhase.SupportChecks,
+            playerCursor: 0,
+            tableCursor: 0,
+            targetTableCount: 0,
+            sourceTableId: 0,
+            destinationTableId: 0,
+            balanceScanCursor: 0,
+            smallestTableId: 0,
+            smallestSize: 0,
+            largestTableId: 0,
+            largestSize: 0
+        });
 
-        _applyRoundSupportChecks(roundId);
+    }
 
+    function processSupportBatch(uint256 maxPlayers)
+        external
+        nonReentrant
+        inState(TournamentState.Active)
+    {
+        _requireFinalizationPhase(FinalizationPhase.SupportChecks);
+        _requireBatchSize(maxPlayers, MAX_SUPPORT_BATCH_PLAYERS);
+
+        uint256 start = roundFinalization.playerCursor;
+        uint256 end = start + maxPlayers;
+        if (end > players.length) end = players.length;
+
+        for (uint256 i = start; i < end; i++) {
+            _applyPlayerSupportCheck(
+                players[i],
+                lastStartedRound
+            );
+        }
+        roundFinalization.playerCursor = end;
+        if (end != players.length) return;
         if (activePlayers <= 1) {
+            uint256 roundId = lastStartedRound;
+            lastEndedRound = roundId;
+            emit RoundEnded(roundId);
             _completeTournament();
             return;
         }
 
-        _applyWeightedResourcePenalties(roundId, randomness);
+        roundFinalization.phase = FinalizationPhase.ResourcePenalties;
+        roundFinalization.tableCursor = 1;
+    }
 
-        _rebalanceTables();
+    function processPenaltyBatch(uint256 maxTables)
+        external
+        nonReentrant
+        inState(TournamentState.Active)
+    {
+        _requireFinalizationPhase(FinalizationPhase.ResourcePenalties);
+        _requireBatchSize(maxTables, MAX_PENALTY_BATCH_TABLES);
+
+        uint256 start = roundFinalization.tableCursor;
+        uint256 end = start + maxTables;
+        uint256 afterLastTable = tableCount + 1;
+        if (end > afterLastTable) end = afterLastTable;
+
+        uint256 randomness = ITournamentBattleManager(battleManager)
+            .getRoundRandomness(lastStartedRound);
+        LandLord.ResourceType selectedResource = _selectPenaltyResource(
+            lastStartedRound,
+            randomness
+        );
+        for (uint256 tableId = start; tableId < end; tableId++) {
+            _applyWeightedResourcePenaltyForTable(
+                lastStartedRound,
+                tableId,
+                randomness,
+                selectedResource
+            );
+        }
+        roundFinalization.tableCursor = end;
+        if (end != afterLastTable) return;
+        roundFinalization.phase = FinalizationPhase.TableCompaction;
+        roundFinalization.tableCursor = 1;
+    }
+
+    function processTableCompactionBatch(uint256 maxTables)
+        external
+        inState(TournamentState.Active)
+    {
+        _requireFinalizationPhase(FinalizationPhase.TableCompaction);
+        _requireBatchSize(maxTables, MAX_COMPACTION_BATCH_TABLES);
+
+        uint256 start = roundFinalization.tableCursor;
+        uint256 end = start + maxTables;
+        uint256 afterLastTable = tableCount + 1;
+        if (end > afterLastTable) end = afterLastTable;
+
+        for (uint256 tableId = start; tableId < end; tableId++) {
+            _compactTable(tableId);
+        }
+        roundFinalization.tableCursor = end;
+        if (end != afterLastTable) return;
+        roundFinalization.targetTableCount =
+            (activePlayers + MAX_TABLE_SIZE - 1) / MAX_TABLE_SIZE;
+        roundFinalization.sourceTableId = tableCount;
+        roundFinalization.destinationTableId = 1;
+        roundFinalization.phase = FinalizationPhase.TableConsolidation;
+    }
+
+    function processTableConsolidationBatch(uint256 maxWork)
+        external
+        inState(TournamentState.Active)
+    {
+        _requireFinalizationPhase(FinalizationPhase.TableConsolidation);
+        _requireBatchSize(maxWork, MAX_CONSOLIDATION_BATCH_WORK);
+
+        uint256 workProcessed;
+        while (
+            workProcessed < maxWork &&
+            roundFinalization.sourceTableId >
+            roundFinalization.targetTableCount
+        ) {
+            uint256 sourceTableId = roundFinalization.sourceTableId;
+            address[] storage sourcePlayers = tablePlayers[sourceTableId];
+            if (sourcePlayers.length == 0) {
+                roundFinalization.sourceTableId = sourceTableId - 1;
+                workProcessed++;
+                continue;
+            }
+
+            while (
+                tablePlayers[roundFinalization.destinationTableId].length >=
+                MAX_TABLE_SIZE
+            ) {
+                roundFinalization.destinationTableId++;
+            }
+
+            address player = sourcePlayers[sourcePlayers.length - 1];
+            sourcePlayers.pop();
+            uint256 destinationTableId =
+                roundFinalization.destinationTableId;
+            tablePlayers[destinationTableId].push(player);
+            playerInfo[player].tableId = destinationTableId;
+            emit PlayerMovedTable(
+                player,
+                sourceTableId,
+                destinationTableId
+            );
+            workProcessed++;
+        }
+
+        if (
+            roundFinalization.sourceTableId >
+            roundFinalization.targetTableCount
+        ) return;
+
+        tableCount = roundFinalization.targetTableCount;
+        _startBalanceScan();
+    }
+
+    function processBalanceScanBatch(uint256 maxTables)
+        external
+        inState(TournamentState.Active)
+    {
+        _requireFinalizationPhase(FinalizationPhase.BalanceScan);
+        _requireBatchSize(maxTables, MAX_BALANCE_SCAN_TABLES);
+
+        uint256 start = roundFinalization.balanceScanCursor;
+        uint256 end = start + maxTables;
+        uint256 afterLastTable = tableCount + 1;
+        if (end > afterLastTable) end = afterLastTable;
+
+        for (uint256 tableId = start; tableId < end; tableId++) {
+            uint256 size = tablePlayers[tableId].length;
+            if (
+                size < roundFinalization.smallestSize
+            ) {
+                roundFinalization.smallestSize = size;
+                roundFinalization.smallestTableId = tableId;
+            }
+            if (
+                size > roundFinalization.largestSize
+            ) {
+                roundFinalization.largestSize = size;
+                roundFinalization.largestTableId = tableId;
+            }
+        }
+        roundFinalization.balanceScanCursor = end;
+        if (end != afterLastTable) return;
+        if (
+            roundFinalization.largestSize -
+            roundFinalization.smallestSize <=
+            3
+        ) {
+            roundFinalization.phase = FinalizationPhase.ReadyToFinalize;
+        } else {
+            roundFinalization.phase = FinalizationPhase.BalanceMove;
+        }
+    }
+
+    function applyBalanceMove()
+        external
+        inState(TournamentState.Active)
+    {
+        _requireFinalizationPhase(FinalizationPhase.BalanceMove);
+
+        uint256 largestTableId = roundFinalization.largestTableId;
+        uint256 smallestTableId = roundFinalization.smallestTableId;
+        address[] storage largestTable = tablePlayers[largestTableId];
+        address player = largestTable[largestTable.length - 1];
+        largestTable.pop();
+        tablePlayers[smallestTableId].push(player);
+        playerInfo[player].tableId = smallestTableId;
+        emit PlayerMovedTable(player, largestTableId, smallestTableId);
+
+        _startBalanceScan();
+    }
+
+    function finalizeRound()
+        external
+        onlyAdmin
+        inState(TournamentState.Active)
+    {
+        _requireFinalizationPhase(FinalizationPhase.ReadyToFinalize);
+        uint256 roundId = lastStartedRound;
+        lastEndedRound = roundId;
+        delete roundFinalization;
+        emit RoundEnded(roundId);
     }
 
     function receiveRandomness(uint256 requestId, uint256 randomness)
@@ -988,12 +1235,17 @@ contract TournamentManager is ReentrancyGuard {
                 }
             }
         }
+        delete roundFinalization;
         state = TournamentState.Complete;
         emit TournamentCompleted();
     }
 
     function playerCount() external view returns (uint256) {
         return players.length;
+    }
+
+    function finalizationPhase() external view returns (FinalizationPhase) {
+        return roundFinalization.phase;
     }
 
     function activePlayerCount() external view returns (uint256) {
@@ -1131,33 +1383,32 @@ contract TournamentManager is ReentrancyGuard {
         }
     }
 
-    function _applyRoundSupportChecks(uint256 roundId) internal {
-        for (uint256 i = 0; i < players.length; i++) {
-            address player = players[i];
-            if (!playerInfo[player].active) continue;
+    function _applyPlayerSupportCheck(address player, uint256 roundId) internal {
+        if (!playerInfo[player].active) return;
 
-            uint256[] memory colonies = playerColonies[player];
-            for (uint256 j = 0; j < colonies.length; j++) {
-                uint256 colonyId = colonies[j];
-                ColonyInfo memory colony = colonyInfo[colonyId];
-                if (!colony.active) continue;
-                if (!_isColonyAvailableForRound(colonyId, roundId)) continue;
+        uint256[] memory colonies = playerColonies[player];
+        for (uint256 i = 0; i < colonies.length; i++) {
+            uint256 colonyId = colonies[i];
+            ColonyInfo memory colony = colonyInfo[colonyId];
+            if (!colony.active) continue;
+            if (!_isColonyAvailableForRound(colonyId, roundId)) continue;
 
-                bool eliminated = LandLord(colony.landLord).applyRoundUpkeep(
-                    player,
-                    roundId
-                );
-                if (eliminated && colonyInfo[colonyId].active) {
-                    _eliminateColony(colonyId);
-                }
+            bool eliminated = LandLord(colony.landLord).applyRoundUpkeep(
+                player,
+                roundId
+            );
+            if (eliminated && colonyInfo[colonyId].active) {
+                _eliminateColony(colonyId);
             }
         }
     }
 
-    function _applyWeightedResourcePenalties(uint256 roundId, uint256 randomness)
+    function _selectPenaltyResource(uint256 roundId, uint256 randomness)
         internal
+        pure
+        returns (LandLord.ResourceType)
     {
-        LandLord.ResourceType selectedResource = LandLord.ResourceType(
+        return LandLord.ResourceType(
             uint256(
                 keccak256(
                     abi.encode(
@@ -1168,32 +1419,37 @@ contract TournamentManager is ReentrancyGuard {
                 )
             ) % uint256(LandLord.ResourceType.Army)
         );
+    }
 
-        for (uint256 tableId = 1; tableId <= tableCount; tableId++) {
-            address[] memory assignedPlayers = tablePlayers[tableId];
-            PenaltyCandidate[] memory candidates =
-                new PenaltyCandidate[](assignedPlayers.length);
-            uint256 candidateCount;
+    function _applyWeightedResourcePenaltyForTable(
+        uint256 roundId,
+        uint256 tableId,
+        uint256 randomness,
+        LandLord.ResourceType selectedResource
+    ) internal {
+        address[] memory assignedPlayers = tablePlayers[tableId];
+        PenaltyCandidate[] memory candidates =
+            new PenaltyCandidate[](assignedPlayers.length);
+        uint256 candidateCount;
 
-            for (uint256 i = 0; i < assignedPlayers.length; i++) {
-                address player = assignedPlayers[i];
-                if (!playerInfo[player].active) continue;
+        for (uint256 i = 0; i < assignedPlayers.length; i++) {
+            address player = assignedPlayers[i];
+            if (!playerInfo[player].active) continue;
 
-                PenaltyCandidate memory candidate =
-                    _buildPenaltyCandidate(player, roundId, selectedResource);
-                if (candidate.totalResource == 0) continue;
-                candidates[candidateCount++] = candidate;
-            }
-
-            _applyWeightedResourcePenalty(
-                roundId,
-                tableId,
-                randomness,
-                selectedResource,
-                candidates,
-                candidateCount
-            );
+            PenaltyCandidate memory candidate =
+                _buildPenaltyCandidate(player, roundId, selectedResource);
+            if (candidate.totalResource == 0) continue;
+            candidates[candidateCount++] = candidate;
         }
+
+        _applyWeightedResourcePenalty(
+            roundId,
+            tableId,
+            randomness,
+            selectedResource,
+            candidates,
+            candidateCount
+        );
     }
 
     function _buildPenaltyCandidate(address player, uint256 roundId, LandLord.ResourceType selectedResource)
@@ -1339,106 +1595,58 @@ contract TournamentManager is ReentrancyGuard {
         return balances.army;
     }
 
-    /**
-     * @dev Keeps surviving players at their current tables whenever possible.
-     *      Excess highest-numbered tables are dissolved, then tables are
-     *      balanced only while the largest and smallest sizes differ by more
-     *      than three players.
-     */
-    function _rebalanceTables() internal {
-        _compactTables();
+    function _compactTable(uint256 tableId) internal {
+        address[] storage assignedPlayers = tablePlayers[tableId];
+        uint256 activeCursor;
 
-        uint256 targetTableCount =
-            (activePlayers + MAX_TABLE_SIZE - 1) / MAX_TABLE_SIZE;
-        _consolidateTables(targetTableCount);
-        _balanceTables();
-    }
-
-    function _compactTables() internal {
-        for (uint256 tableId = 1; tableId <= tableCount; tableId++) {
-            address[] storage assignedPlayers = tablePlayers[tableId];
-            uint256 activeCursor;
-
-            for (uint256 i = 0; i < assignedPlayers.length; i++) {
-                address player = assignedPlayers[i];
-                if (!playerInfo[player].active) {
-                    playerInfo[player].tableId = 0;
-                    continue;
-                }
-
-                if (activeCursor != i) {
-                    assignedPlayers[activeCursor] = player;
-                }
-                activeCursor++;
+        for (uint256 i = 0; i < assignedPlayers.length; i++) {
+            address player = assignedPlayers[i];
+            if (!playerInfo[player].active) {
+                playerInfo[player].tableId = 0;
+                continue;
             }
 
-            while (assignedPlayers.length > activeCursor) {
-                assignedPlayers.pop();
+            if (activeCursor != i) {
+                assignedPlayers[activeCursor] = player;
             }
+            activeCursor++;
+        }
+
+        while (assignedPlayers.length > activeCursor) {
+            assignedPlayers.pop();
         }
     }
 
-    function _consolidateTables(uint256 targetTableCount) internal {
-        if (targetTableCount >= tableCount) return;
-
-        uint256 destinationTableId = 1;
-        for (
-            uint256 sourceTableId = tableCount;
-            sourceTableId > targetTableCount;
-            sourceTableId--
-        ) {
-            address[] storage sourcePlayers = tablePlayers[sourceTableId];
-            while (sourcePlayers.length > 0) {
-                while (
-                    tablePlayers[destinationTableId].length >= MAX_TABLE_SIZE
-                ) {
-                    destinationTableId++;
-                }
-
-                address player = sourcePlayers[sourcePlayers.length - 1];
-                sourcePlayers.pop();
-                tablePlayers[destinationTableId].push(player);
-                playerInfo[player].tableId = destinationTableId;
-                emit PlayerMovedTable(
-                    player,
-                    sourceTableId,
-                    destinationTableId
-                );
-            }
+    function _startBalanceScan() internal {
+        if (tableCount <= 1) {
+            roundFinalization.phase = FinalizationPhase.ReadyToFinalize;
+            return;
         }
 
-        tableCount = targetTableCount;
+        uint256 firstSize = tablePlayers[1].length;
+        roundFinalization.balanceScanCursor = 2;
+        roundFinalization.smallestTableId = 1;
+        roundFinalization.smallestSize = firstSize;
+        roundFinalization.largestTableId = 1;
+        roundFinalization.largestSize = firstSize;
+        roundFinalization.phase = FinalizationPhase.BalanceScan;
     }
 
-    function _balanceTables() internal {
-        if (tableCount <= 1) return;
+    function _requireBatchSize(uint256 requested, uint256 maximum)
+        internal
+        pure
+    {
+        if (requested == 0 || requested > maximum) {
+            revert InvalidBatchSize();
+        }
+    }
 
-        while (true) {
-            uint256 smallestTableId = 1;
-            uint256 largestTableId = 1;
-            uint256 smallestSize = tablePlayers[1].length;
-            uint256 largestSize = smallestSize;
-
-            for (uint256 tableId = 2; tableId <= tableCount; tableId++) {
-                uint256 size = tablePlayers[tableId].length;
-                if (size < smallestSize) {
-                    smallestSize = size;
-                    smallestTableId = tableId;
-                }
-                if (size > largestSize) {
-                    largestSize = size;
-                    largestTableId = tableId;
-                }
-            }
-
-            if (largestSize - smallestSize <= 3) return;
-
-            address[] storage largestTable = tablePlayers[largestTableId];
-            address player = largestTable[largestTable.length - 1];
-            largestTable.pop();
-            tablePlayers[smallestTableId].push(player);
-            playerInfo[player].tableId = smallestTableId;
-            emit PlayerMovedTable(player, largestTableId, smallestTableId);
+    function _requireFinalizationPhase(FinalizationPhase expected)
+        internal
+        view
+    {
+        if (roundFinalization.phase != expected) {
+            revert WrongFinalizationPhase();
         }
     }
 }

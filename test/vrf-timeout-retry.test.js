@@ -85,6 +85,24 @@ describe("TournamentManager VRF timeout and retry", function () {
     return { requestId, tx, receipt: await tx.wait() };
   }
 
+  async function finalizeBattleRound(ctx) {
+    await ctx.tournament.endBattleRound();
+    while (Number(await ctx.tournament.state()) === 1) {
+      const phase = Number(await ctx.tournament.finalizationPhase());
+      if (phase === 0) return;
+      if (phase === 1) await ctx.tournament.processSupportBatch(25);
+      else if (phase === 2) await ctx.tournament.processPenaltyBatch(10);
+      else if (phase === 3) {
+        await ctx.tournament.processTableCompactionBatch(25);
+      } else if (phase === 4) {
+        await ctx.tournament.processTableConsolidationBatch(25);
+      } else if (phase === 5) {
+        await ctx.tournament.processBalanceScanBatch(50);
+      } else if (phase === 6) await ctx.tournament.applyBalanceMove();
+      else if (phase === 7) await ctx.tournament.finalizeRound();
+    }
+  }
+
   function defendPlan(colonyId) {
     return {
       action: {
@@ -253,7 +271,7 @@ describe("TournamentManager VRF timeout and retry", function () {
     const first = await request(ctx);
     await ctx.vrf.fulfill(first.requestId, 123);
     await ctx.tournament.resolveTableConflicts(1, 1);
-    await ctx.tournament.endBattleRound();
+    await finalizeBattleRound(ctx);
     await ctx.tournament.startBattleRound();
 
     await expectCustomError(

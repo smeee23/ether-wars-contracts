@@ -168,6 +168,37 @@ describe("BattleManager connected conflict groups", function () {
     );
   }
 
+  async function completeActiveFinalization(ctx, batchSize = 10) {
+    while (Number(await ctx.tournament.state()) === 1) {
+      const phase = Number(await ctx.tournament.finalizationPhase());
+      if (phase === 0) return;
+      if (phase === 1) {
+        await ctx.tournament.processSupportBatch(Math.min(batchSize, 25));
+      } else if (phase === 2) {
+        await ctx.tournament.processPenaltyBatch(Math.min(batchSize, 10));
+      } else if (phase === 3) {
+        await ctx.tournament.processTableCompactionBatch(
+          Math.min(batchSize, 25)
+        );
+      } else if (phase === 4) {
+        await ctx.tournament.processTableConsolidationBatch(
+          Math.min(batchSize, 25)
+        );
+      } else if (phase === 5) {
+        await ctx.tournament.processBalanceScanBatch(Math.min(batchSize, 50));
+      } else if (phase === 6) {
+        await ctx.tournament.applyBalanceMove();
+      } else if (phase === 7) {
+        await ctx.tournament.finalizeRound();
+      }
+    }
+  }
+
+  async function finalizeBattleRound(ctx, batchSize = 10) {
+    await ctx.tournament.endBattleRound();
+    await completeActiveFinalization(ctx, batchSize);
+  }
+
   function attack(target, amount) {
     return {
       actionType: ATTACK,
@@ -471,7 +502,7 @@ describe("BattleManager connected conflict groups", function () {
     await revealAction(ctx, c, cAction, cSalt);
     await resolvePhase();
     await resolveTable(ctx, roundId);
-    await ctx.tournament.endBattleRound();
+    await finalizeBattleRound(ctx);
 
     return { roundId, survivors: [a, c] };
   }
@@ -500,12 +531,16 @@ describe("BattleManager connected conflict groups", function () {
     }
     await resolvePhase();
     await resolveTable(ctx, roundId);
-    await ctx.tournament.endBattleRound();
+    await finalizeBattleRound(ctx);
     ctx.queuedAllocations.clear();
     ctx.queuedExpansions.clear();
   }
 
-  async function finishAllTablesRound(ctx, randomness = 12345) {
+  async function finishAllTablesRound(
+    ctx,
+    randomness = 12345,
+    batchSize = 10
+  ) {
     const roundId = await startRound(ctx, randomness);
     const reveals = [];
 
@@ -536,7 +571,7 @@ describe("BattleManager connected conflict groups", function () {
     for (let tableId = 1; tableId <= requiredTableCount; tableId++) {
       await ctx.tournament.resolveTableConflicts(tableId, roundId);
     }
-    await ctx.tournament.endBattleRound();
+    await finalizeBattleRound(ctx, batchSize);
 
     return roundId;
   }
@@ -686,7 +721,7 @@ describe("BattleManager connected conflict groups", function () {
     expect((await ctx.battleManager.resolvedTableCount(roundId)).toString()).to.equal("2");
     expect(await ctx.battleManager.canEndRound()).to.equal(true);
 
-    await ctx.tournament.endBattleRound();
+    await finalizeBattleRound(ctx);
 
     expect((await ctx.tournament.lastEndedRound()).toString()).to.equal(String(roundId));
   });
@@ -731,7 +766,7 @@ describe("BattleManager connected conflict groups", function () {
     expect(await ctx.tournament.getTablePlayers(2)).to.deep.equal(tableTwoBefore);
 
     await ctx.tournament.resolveTableConflicts(2, roundId);
-    await ctx.tournament.endBattleRound();
+    await finalizeBattleRound(ctx);
 
     expect((await ctx.tournament.lastEndedRound()).toString()).to.equal(String(roundId));
   });
@@ -784,6 +819,73 @@ describe("BattleManager connected conflict groups", function () {
     expect(
       (await ctx.tournament.getPlayerTable(ctx.players[0].address)).toString()
     ).to.equal("0");
+  });
+
+  it("produces the same final state for small and large batches", async function () {
+    const smallBatch = await deployGame(11);
+    const largeBatch = await deployGame(11);
+    await fundAllSurvival(smallBatch);
+    await fundAllSurvival(largeBatch);
+
+    await finishAllTablesRound(smallBatch, 444, 1);
+    await finishAllTablesRound(largeBatch, 444, 10);
+
+    for (let tableId = 1; tableId <= 2; tableId++) {
+      expect(await smallBatch.tournament.getTablePlayers(tableId)).to.deep.equal(
+        await largeBatch.tournament.getTablePlayers(tableId)
+      );
+    }
+    for (let i = 0; i < smallBatch.players.length; i++) {
+      const smallLandLord = await landLordOf(smallBatch, smallBatch.players[i]);
+      const largeLandLord = await landLordOf(largeBatch, largeBatch.players[i]);
+      const smallResources = await smallLandLord.getResources();
+      const largeResources = await largeLandLord.getResources();
+      expect(smallResources.map(String)).to.deep.equal(
+        largeResources.map(String)
+      );
+    }
+  });
+
+  it("enforces finalization phase order and blocks the next round", async function () {
+    const ctx = await deployGame(2);
+    await fundAllSurvival(ctx);
+    const roundId = await startRound(ctx);
+    const reveals = [];
+    for (const player of ctx.players) {
+      const salt = await commitAction(
+        ctx,
+        player,
+        roundId,
+        defend(),
+        `phase-order-${player.address}`
+      );
+      reveals.push({ player, salt });
+    }
+    await revealPhase();
+    for (const item of reveals) {
+      await revealAction(ctx, item.player, defend(), item.salt);
+    }
+    await resolvePhase();
+    await resolveTable(ctx, roundId);
+    await ctx.tournament.endBattleRound();
+
+    await expectRevert(
+      ctx.tournament.processPenaltyBatch(1),
+      "WrongFinalizationPhase"
+    );
+    await expectRevert(
+      ctx.tournament.processSupportBatch(0),
+      "InvalidBatchSize"
+    );
+    await expectRevert(
+      ctx.tournament.startBattleRound(),
+      "round active"
+    );
+
+    await completeActiveFinalization(ctx, 1);
+    expect((await ctx.tournament.lastEndedRound()).toString()).to.equal(
+      String(roundId)
+    );
   });
 
   it("does not allow unresolved conflicts to be skipped by starting the next round", async function () {
@@ -982,7 +1084,7 @@ describe("BattleManager connected conflict groups", function () {
 
     await resolvePhase();
     await resolveTable(ctx, roundId);
-    await ctx.tournament.endBattleRound();
+    await finalizeBattleRound(ctx);
 
     const aLandLord = await landLordOf(ctx, a);
     const aResources = await aLandLord.getResources();
@@ -1494,7 +1596,7 @@ describe("BattleManager connected conflict groups", function () {
     await revealAction(ctx, b, defend(), bSalt);
     await resolvePhase();
     await resolveTable(ctx, roundId);
-    await ctx.tournament.endBattleRound();
+    await finalizeBattleRound(ctx);
 
     const requestIdAfter = await ctx.vrfProvider.nextRequestId();
     const aEvents = await aLandLord.queryFilter(
@@ -1547,7 +1649,7 @@ describe("BattleManager connected conflict groups", function () {
     await requestRoundRandomness(ctx, roundId);
     await ctx.tournament.resolveTableConflicts(1, roundId);
     await ctx.tournament.resolveTableConflicts(2, roundId);
-    await ctx.tournament.endBattleRound();
+    await finalizeBattleRound(ctx);
 
     const resourcePenalties = [];
     for (const player of ctx.players) {
@@ -1638,7 +1740,7 @@ describe("BattleManager connected conflict groups", function () {
     await revealAction(ctx, b, defend(), bSalt);
     await resolvePhase();
     await resolveTable(ctx, roundId);
-    await ctx.tournament.endBattleRound();
+    await finalizeBattleRound(ctx);
 
     const expandedPenalty = penaltyAmount(
       ctx.roundRandomness,
