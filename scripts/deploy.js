@@ -31,10 +31,12 @@ async function main() {
     process.env.LIDO_REFERRAL_ADDRESS || ethers.constants.AddressZero,
   ]);
   const landLordImplementation = await deployContract("LandLord");
+  const resourceLottery = await deployContract("ResourceLottery");
 
   const tournament = await deployContract("TournamentManager", [
     yieldAdapter.address,
     landLordImplementation.address,
+    resourceLottery.address,
     tournamentId,
     entryDeposit,
   ]);

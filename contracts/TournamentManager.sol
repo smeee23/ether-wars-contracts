@@ -2,6 +2,7 @@
 pragma solidity 0.8.20;
 
 import {LandLord} from "./LandLord.sol";
+import {IResourceLottery} from "./interfaces/protocol/IResourceLottery.sol";
 import {IYieldAdapter} from "./interfaces/protocol/IYieldAdapter.sol";
 import {GameTypes} from "./libraries/GameTypes.sol";
 import "@openzeppelin/contracts/proxy/Clones.sol";
@@ -49,21 +50,11 @@ contract TournamentManager is ReentrancyGuard {
     uint256 public constant STARTING_SHELTER = 0;
     uint256 public constant STARTING_ARMY = 0;
     uint256 public constant BASIS_POINTS = 10_000;
-    uint256 public constant PENALTY_RATIO_SMOOTHING_BPS = 500;
-    uint256 public constant PENALTY_WEIGHT_NUMERATOR = 100_000_000;
-    uint256 public constant MIN_RESOURCE_PENALTY_BPS = 500;
-    uint256 public constant MAX_RESOURCE_PENALTY_BPS = 2_000;
     uint256 private constant MAX_SUPPORT_BATCH_PLAYERS = 25;
     uint256 private constant MAX_PENALTY_BATCH_TABLES = 10;
     uint256 private constant MAX_COMPACTION_BATCH_TABLES = 25;
     uint256 private constant MAX_CONSOLIDATION_BATCH_WORK = 25;
     uint256 private constant MAX_BALANCE_SCAN_TABLES = 50;
-    uint256 private constant RESOURCE_PENALTY_DOMAIN =
-        uint256(keccak256("weighted-resource-penalty"));
-    uint256 private constant RESOURCE_PENALTY_SELECTION_DOMAIN =
-        uint256(keccak256("weighted-resource-penalty-selection"));
-    uint256 private constant RESOURCE_PENALTY_SIZE_DOMAIN =
-        uint256(keccak256("weighted-resource-penalty-size"));
     uint256 private constant INITIAL_COLONIES = 1;
     uint256 private constant MAX_COLONIES = 3;
     uint256 private constant EXPANSION_CLAIM_WINDOW_ROUNDS = 3;
@@ -107,14 +98,6 @@ contract TournamentManager is ReentrancyGuard {
         bool fulfilled;
     }
 
-    struct PenaltyCandidate {
-        uint256 totalResource;
-        uint256 resourceBalance;
-        uint256 weakestColonyId;
-        uint256 weakestColonyBalance;
-        uint256 weakestColonyTotal;
-    }
-
     struct RoundFinalization {
         FinalizationPhase phase;
         uint256 playerCursor;
@@ -148,9 +131,11 @@ contract TournamentManager is ReentrancyGuard {
     error UnauthorizedVrfProvider();
     error WrongFinalizationPhase();
     error InvalidBatchSize();
+    error InvalidLotteryResult();
 
     address public immutable admin;
     address public immutable landLordImplementation;
+    IResourceLottery private immutable resourceLottery;
     uint256 public immutable tournamentId;
     uint256 public immutable entryDeposit;
     uint256 public totalPrincipalStETH;
@@ -285,16 +270,19 @@ contract TournamentManager is ReentrancyGuard {
     constructor(
         address _yieldAdapter,
         address _landLordImplementation,
+        address _resourceLottery,
         uint256 _tournamentId,
         uint256 _entryDeposit
     ) {
         require(_yieldAdapter != address(0), "invalid yield adapter");
         require(_landLordImplementation != address(0), "invalid landlord");
+        require(_resourceLottery != address(0), "invalid resource lottery");
         require(_entryDeposit > 0, "invalid entry deposit");
 
         admin = msg.sender;
         yieldAdapter = _yieldAdapter;
         landLordImplementation = _landLordImplementation;
+        resourceLottery = IResourceLottery(_resourceLottery);
         tournamentId = _tournamentId;
         entryDeposit = _entryDeposit;
         state = TournamentState.Registration;
@@ -572,16 +560,11 @@ contract TournamentManager is ReentrancyGuard {
 
         uint256 randomness = ITournamentBattleManager(battleManager)
             .getRoundRandomness(lastStartedRound);
-        LandLord.ResourceType selectedResource = _selectPenaltyResource(
-            lastStartedRound,
-            randomness
-        );
         for (uint256 tableId = start; tableId < end; tableId++) {
             _applyWeightedResourcePenaltyForTable(
                 lastStartedRound,
                 tableId,
-                randomness,
-                selectedResource
+                randomness
             );
         }
         roundFinalization.tableCursor = end;
@@ -1403,185 +1386,48 @@ contract TournamentManager is ReentrancyGuard {
         }
     }
 
-    function _selectPenaltyResource(uint256 roundId, uint256 randomness)
-        internal
-        pure
-        returns (LandLord.ResourceType)
-    {
-        return LandLord.ResourceType(
-            uint256(
-                keccak256(
-                    abi.encode(
-                        randomness,
-                        roundId,
-                        RESOURCE_PENALTY_SELECTION_DOMAIN
-                    )
-                )
-            ) % uint256(LandLord.ResourceType.Army)
-        );
-    }
-
     function _applyWeightedResourcePenaltyForTable(
         uint256 roundId,
         uint256 tableId,
-        uint256 randomness,
-        LandLord.ResourceType selectedResource
+        uint256 randomness
     ) internal {
-        address[] memory assignedPlayers = tablePlayers[tableId];
-        PenaltyCandidate[] memory candidates =
-            new PenaltyCandidate[](assignedPlayers.length);
-        uint256 candidateCount;
-
-        for (uint256 i = 0; i < assignedPlayers.length; i++) {
-            address player = assignedPlayers[i];
-            if (!playerInfo[player].active) continue;
-
-            PenaltyCandidate memory candidate =
-                _buildPenaltyCandidate(player, roundId, selectedResource);
-            if (candidate.totalResource == 0) continue;
-            candidates[candidateCount++] = candidate;
-        }
-
-        _applyWeightedResourcePenalty(
-            roundId,
-            tableId,
-            randomness,
-            selectedResource,
-            candidates,
-            candidateCount
-        );
-    }
-
-    function _buildPenaltyCandidate(address player, uint256 roundId, LandLord.ResourceType selectedResource)
-        internal
-        view
-        returns (PenaltyCandidate memory candidate)
-    {
-        uint256[] memory colonies = playerColonies[player];
-
-        for (uint256 i = 0; i < colonies.length; i++) {
-            uint256 colonyId = colonies[i];
-            ColonyInfo memory colony = colonyInfo[colonyId];
-            if (
-                !colony.active ||
-                !_isColonyAvailableForRound(colonyId, roundId)
-            ) continue;
-
-            LandLord.Resources memory balances = LandLord(colony.landLord)
-                .getResources();
-            uint256 colonyTotal = _totalColonyResources(balances);
-            candidate.totalResource += colonyTotal;
-
-            uint256 balance = _resourceBalance(
-                balances,
-                selectedResource
+        (uint256 resource, uint256 colonyId, uint256 penaltyAmount) =
+            resourceLottery.calculatePenalty(
+                address(this),
+                roundId,
+                tableId,
+                randomness
             );
-            candidate.resourceBalance += balance;
-
-            uint256 weakestId = candidate.weakestColonyId;
-            if (
-                weakestId == 0 ||
-                balance * candidate.weakestColonyTotal <
-                    candidate.weakestColonyBalance * colonyTotal ||
-                (
-                    balance * candidate.weakestColonyTotal ==
-                        candidate.weakestColonyBalance *
-                            colonyTotal &&
-                    colonyId < weakestId
-                )
-            ) {
-                candidate.weakestColonyId = colonyId;
-                candidate.weakestColonyBalance = balance;
-                candidate.weakestColonyTotal = colonyTotal;
-            }
-        }
-    }
-
-    function _applyWeightedResourcePenalty(
-        uint256 roundId,
-        uint256 tableId,
-        uint256 randomness,
-        LandLord.ResourceType resource,
-        PenaltyCandidate[] memory candidates,
-        uint256 candidateCount
-    ) internal {
-        uint256[] memory weights = new uint256[](candidateCount);
-        uint256 totalWeight;
-
-        for (uint256 i = 0; i < candidateCount; i++) {
-            uint256 ratioBps =
-                candidates[i].resourceBalance * BASIS_POINTS /
-                candidates[i].totalResource;
-            uint256 weight = PENALTY_WEIGHT_NUMERATOR /
-                (PENALTY_RATIO_SMOOTHING_BPS + ratioBps);
-            weights[i] = weight;
-            totalWeight += weight;
-        }
-        if (totalWeight == 0) return;
-
-        uint256 roll = uint256(
-            keccak256(
-                abi.encode(
-                    randomness,
-                    roundId,
-                    tableId,
-                    resource,
-                    RESOURCE_PENALTY_DOMAIN
-                )
-            )
-        ) % totalWeight;
-        uint256 selectedIndex;
-        uint256 cumulativeWeight;
-        for (uint256 i = 0; i < candidateCount; i++) {
-            cumulativeWeight += weights[i];
-            if (roll < cumulativeWeight) {
-                selectedIndex = i;
-                break;
-            }
-        }
-
-        PenaltyCandidate memory selected = candidates[selectedIndex];
-        uint256 colonyId = selected.weakestColonyId;
         if (colonyId == 0) return;
 
-        uint256 penaltyBps = MIN_RESOURCE_PENALTY_BPS +
-            (
-                uint256(
-                    keccak256(
-                        abi.encode(
-                            randomness,
-                            roundId,
-                            tableId,
-                            resource,
-                            colonyId,
-                            RESOURCE_PENALTY_SIZE_DOMAIN
-                        )
-                    )
-                ) %
-                (MAX_RESOURCE_PENALTY_BPS - MIN_RESOURCE_PENALTY_BPS + 1)
-            );
-        uint256 penaltyAmount =
-            (
-                selected.weakestColonyBalance * penaltyBps +
-                BASIS_POINTS -
-                1
-            ) / BASIS_POINTS;
+        ColonyInfo memory colony = colonyInfo[colonyId];
+        PlayerInfo memory owner = playerInfo[colony.owner];
+        if (
+            resource >= uint256(LandLord.ResourceType.Army) ||
+            !colony.active ||
+            colony.landLord == address(0) ||
+            colony.createdRound >= roundId ||
+            !owner.active ||
+            owner.tableId != tableId
+        ) revert InvalidLotteryResult();
 
-        LandLord(colonyInfo[colonyId].landLord).applyResourcePenalty(
+        LandLord.Resources memory balances =
+            LandLord(colony.landLord).getResources();
+        uint256 resourceBalance = _resourceBalance(
+            balances,
+            LandLord.ResourceType(resource)
+        );
+        if (
+            penaltyAmount >
+            (resourceBalance * 2_000 + BASIS_POINTS - 1) / BASIS_POINTS
+        ) revert InvalidLotteryResult();
+
+        LandLord(colony.landLord).applyResourcePenalty(
             roundId,
             colonyId,
-            resource,
+            LandLord.ResourceType(resource),
             penaltyAmount
         );
-    }
-
-    function _totalColonyResources(LandLord.Resources memory balances)
-        internal
-        pure
-        returns (uint256)
-    {
-        return balances.gold + balances.food + balances.water + balances.oxygen +
-            balances.shelter + balances.army;
     }
 
     function _resourceBalance(
@@ -1591,8 +1437,7 @@ contract TournamentManager is ReentrancyGuard {
         if (resource == LandLord.ResourceType.Food) return balances.food;
         if (resource == LandLord.ResourceType.Water) return balances.water;
         if (resource == LandLord.ResourceType.Oxygen) return balances.oxygen;
-        if (resource == LandLord.ResourceType.Shelter) return balances.shelter;
-        return balances.army;
+        return balances.shelter;
     }
 
     function _compactTable(uint256 tableId) internal {

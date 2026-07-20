@@ -35,6 +35,7 @@ describe("BattleManager connected conflict groups", function () {
     const StETH = await ethers.getContractFactory("StETHMock");
     const StETHYieldAdapter = await ethers.getContractFactory("StETHYieldAdapter");
     const LandLord = await ethers.getContractFactory("LandLord");
+    const ResourceLottery = await ethers.getContractFactory("ResourceLottery");
     const TournamentManager = await ethers.getContractFactory("TournamentManager");
     const BattleManager = await ethers.getContractFactory("BattleManager");
     const VRFProviderMock = await ethers.getContractFactory("VRFProviderMock");
@@ -49,10 +50,13 @@ describe("BattleManager connected conflict groups", function () {
 
     const landLordImplementation = await LandLord.deploy();
     await landLordImplementation.deployed();
+    const resourceLottery = await ResourceLottery.deploy();
+    await resourceLottery.deployed();
 
     const tournament = await TournamentManager.deploy(
       yieldAdapter.address,
       landLordImplementation.address,
+      resourceLottery.address,
       1,
       ethers.utils.parseEther("1")
     );

@@ -48,6 +48,7 @@ describe("TournamentManager VRF timeout and retry", function () {
     const StETH = await ethers.getContractFactory("StETHMock");
     const Adapter = await ethers.getContractFactory("StETHYieldAdapter");
     const LandLord = await ethers.getContractFactory("LandLord");
+    const ResourceLottery = await ethers.getContractFactory("ResourceLottery");
     const Tournament = await ethers.getContractFactory("TournamentManager");
     const Battle = await ethers.getContractFactory("BattleManager");
     const Vrf = await ethers.getContractFactory("VRFProviderMock");
@@ -55,9 +56,11 @@ describe("TournamentManager VRF timeout and retry", function () {
     const stETH = await StETH.deploy();
     const adapter = await Adapter.deploy(stETH.address, ethers.constants.AddressZero);
     const implementation = await LandLord.deploy();
+    const resourceLottery = await ResourceLottery.deploy();
     const tournament = await Tournament.deploy(
       adapter.address,
       implementation.address,
+      resourceLottery.address,
       1,
       ethers.utils.parseEther("1")
     );
