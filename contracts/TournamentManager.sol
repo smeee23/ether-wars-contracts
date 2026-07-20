@@ -150,6 +150,7 @@ contract TournamentManager is ReentrancyGuard {
 
     TournamentState public state;
     uint256 public tableCount;
+    uint256 public activeTableCount;
     uint256 public activePlayers;
     uint256 public initialPlayerCount;
     uint256 public nextColonyId;
@@ -165,6 +166,7 @@ contract TournamentManager is ReentrancyGuard {
     mapping(address => uint256) public expansionsUsed;
     mapping(address => uint256) private expansionClaims;
     mapping(uint256 => address[]) private tablePlayers;
+    mapping(uint256 => uint256) private activePlayersByTable;
     mapping(uint256 => uint256) public vrfRequestToRound;
     mapping(uint256 => bool) public staleVrfRequest;
     mapping(uint256 => RoundVrfState) public roundVrfState;
@@ -429,9 +431,8 @@ contract TournamentManager is ReentrancyGuard {
             "round active"
         );
 
-        uint256 requiredTableCount = _requiredTableCount();
         roundId = ITournamentBattleManager(battleManager).startNextRound(
-            requiredTableCount
+            activeTableCount
         );
         lastStartedRound = roundId;
 
@@ -630,12 +631,7 @@ contract TournamentManager is ReentrancyGuard {
             uint256 destinationTableId =
                 roundFinalization.destinationTableId;
             tablePlayers[destinationTableId].push(player);
-            playerInfo[player].tableId = destinationTableId;
-            emit PlayerMovedTable(
-                player,
-                sourceTableId,
-                destinationTableId
-            );
+            _recordTableMove(player, sourceTableId, destinationTableId);
             workProcessed++;
         }
 
@@ -700,8 +696,7 @@ contract TournamentManager is ReentrancyGuard {
         address player = largestTable[largestTable.length - 1];
         largestTable.pop();
         tablePlayers[smallestTableId].push(player);
-        playerInfo[player].tableId = smallestTableId;
-        emit PlayerMovedTable(player, largestTableId, smallestTableId);
+        _recordTableMove(player, largestTableId, smallestTableId);
 
         _startBalanceScan();
     }
@@ -1193,8 +1188,11 @@ contract TournamentManager is ReentrancyGuard {
     function _eliminatePlayer(address player) internal {
         PlayerInfo storage info = playerInfo[player];
         require(info.active, "not active");
+        uint256 tableId = info.tableId;
         info.active = false;
         activePlayers--;
+        activePlayersByTable[tableId]--;
+        if (activePlayersByTable[tableId] == 0) activeTableCount--;
         emit PlayerEliminated(player);
         _unlockExpansionIfMilestoneReached();
     }
@@ -1344,26 +1342,22 @@ contract TournamentManager is ReentrancyGuard {
 
         tablePlayers[tableCount].push(player);
         playerInfo[player].tableId = tableCount;
+        if (activePlayersByTable[tableCount]++ == 0) activeTableCount++;
         emit TableAssigned(player, tableCount);
     }
 
-    function _requiredTableCount() internal view returns (uint256 requiredTableCount) {
-        bool[] memory tableSeen = new bool[](tableCount + 1);
-
-        for (uint256 i = 0; i < players.length; i++) {
-            address player = players[i];
-            PlayerInfo memory info = playerInfo[player];
-            if (!info.active) continue;
-
-            if (
-                info.tableId != 0 &&
-                info.tableId <= tableCount &&
-                !tableSeen[info.tableId]
-            ) {
-                tableSeen[info.tableId] = true;
-                requiredTableCount++;
-            }
+    function _recordTableMove(
+        address player,
+        uint256 sourceTableId,
+        uint256 destinationTableId
+    ) internal {
+        activePlayersByTable[sourceTableId]--;
+        if (activePlayersByTable[sourceTableId] == 0) activeTableCount--;
+        if (activePlayersByTable[destinationTableId]++ == 0) {
+            activeTableCount++;
         }
+        playerInfo[player].tableId = destinationTableId;
+        emit PlayerMovedTable(player, sourceTableId, destinationTableId);
     }
 
     function _applyPlayerSupportCheck(address player, uint256 roundId) internal {

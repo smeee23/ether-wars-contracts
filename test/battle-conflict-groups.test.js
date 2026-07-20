@@ -752,7 +752,11 @@ describe("BattleManager connected conflict groups", function () {
 
   it("does not rebalance tables until all required tables are resolved", async function () {
     const ctx = await deployGame(10);
+    expect((await ctx.tournament.activeTableCount()).toString()).to.equal("2");
     const roundId = await startRound(ctx);
+    expect(
+      (await ctx.battleManager.roundRequiredTableCount(roundId)).toString()
+    ).to.equal("2");
     const tableOneBefore = await ctx.tournament.getTablePlayers(1);
     const tableTwoBefore = await ctx.tournament.getTablePlayers(2);
 
@@ -811,6 +815,7 @@ describe("BattleManager connected conflict groups", function () {
     await finishAllTablesRound(ctx, 333);
 
     expect((await ctx.tournament.tableCount()).toString()).to.equal("1");
+    expect((await ctx.tournament.activeTableCount()).toString()).to.equal("1");
     expect(await ctx.tournament.getTablePlayers(2)).to.deep.equal([]);
 
     const survivingPlayers = ctx.players.slice(2).map((player) => player.address);
@@ -1519,6 +1524,7 @@ describe("BattleManager connected conflict groups", function () {
     expect((await bLandLord.getGold()).toString()).to.equal("0");
     expect((await ctx.tournament.activeColonyCount(b.address)).toString()).to.equal("0");
     expect((await ctx.tournament.playerInfo(b.address)).active).to.equal(false);
+    expect((await ctx.tournament.activeTableCount()).toString()).to.equal("1");
   });
 
   it("does not charge the winner", async function () {
