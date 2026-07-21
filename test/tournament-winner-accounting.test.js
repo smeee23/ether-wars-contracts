@@ -107,9 +107,17 @@ describe("TournamentManager winner and principal accounting", function () {
     await tournament.connect(battleManagerSigner).eliminatePlayer(bob.address);
     await tournament.connect(bob).claimPrincipal();
     await stETH.mint(adapter.address, profit);
-    await tournament.completeTournament();
+    const completion = await tournament.completeTournament();
+    const receipt = await completion.wait();
+    const winnerEvents = await tournament.queryFilter(
+      tournament.filters.WinnerFinalized(),
+      receipt.blockNumber,
+      receipt.blockNumber
+    );
 
     expect(await tournament.winner()).to.equal(alice.address);
+    expect(winnerEvents.length).to.equal(1);
+    expect(winnerEvents[0].args.winner).to.equal(alice.address);
     expect((await tournament.outstandingPrincipalStETH()).toString()).to.equal(
       entryDeposit.toString()
     );

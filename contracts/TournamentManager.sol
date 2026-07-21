@@ -132,6 +132,7 @@ contract TournamentManager is ReentrancyGuard {
     error WrongFinalizationPhase();
     error InvalidBatchSize();
     error InvalidLotteryResult();
+    error InvalidActivePlayerAccounting();
 
     address public immutable admin;
     address public immutable landLordImplementation;
@@ -152,6 +153,7 @@ contract TournamentManager is ReentrancyGuard {
     uint256 public tableCount;
     uint256 public activeTableCount;
     uint256 public activePlayers;
+    uint160 private activePlayerXor;
     uint256 public initialPlayerCount;
     uint256 public nextColonyId;
     uint256 public lastStartedRound;
@@ -374,6 +376,7 @@ contract TournamentManager is ReentrancyGuard {
         });
         players.push(player);
         activePlayers++;
+        activePlayerXor ^= uint160(player);
         _assignToOpenTable(player);
 
         emit PlayerRegistered(player);
@@ -1191,6 +1194,7 @@ contract TournamentManager is ReentrancyGuard {
         uint256 tableId = info.tableId;
         info.active = false;
         activePlayers--;
+        activePlayerXor ^= uint160(player);
         activePlayersByTable[tableId]--;
         if (activePlayersByTable[tableId] == 0) activeTableCount--;
         emit PlayerEliminated(player);
@@ -1208,13 +1212,12 @@ contract TournamentManager is ReentrancyGuard {
 
     function _completeTournament() internal {
         if (activePlayers == 1 && winner == address(0)) {
-            for (uint256 i = 0; i < players.length; i++) {
-                if (playerInfo[players[i]].active) {
-                    winner = players[i];
-                    emit WinnerFinalized(players[i]);
-                    break;
-                }
+            address soleSurvivor = address(activePlayerXor);
+            if (!playerInfo[soleSurvivor].active) {
+                revert InvalidActivePlayerAccounting();
             }
+            winner = soleSurvivor;
+            emit WinnerFinalized(soleSurvivor);
         }
         delete roundFinalization;
         state = TournamentState.Complete;
