@@ -44,7 +44,8 @@ interface IBattleTournamentManager {
         view
         returns (address[] memory);
 
-    function getActionArmyBonus(address player, uint256 colonyId) external view returns (uint256);
+    function getActionAttackPower(address player, uint256 colonyId) external view returns (uint256);
+    function getActionDefensePower(address player, uint256 colonyId) external view returns (uint256);
 }
 
 /**
@@ -60,10 +61,8 @@ contract BattleManager is ReentrancyGuard {
     uint256 public constant REVEAL_DURATION = 2 hours;
     uint256 public constant BASE_SCORE = 100;
     uint256 public constant RANDOM_SCORE_RANGE = 100;
-    uint256 public constant ATTACK_VS_BUILD_BONUS = 25;
-    uint256 public constant ATTACK_VS_DEFEND_PENALTY = 15;
-    uint256 public constant DEFEND_BONUS = 20;
-    uint256 public constant MAX_ARMY_BONUS = 20;
+    uint256 public constant BATTLE_BONUS = 25;
+    uint256 public constant MAX_MILITARY_BONUS = 20;
 
     // =========================
     // ENUMS
@@ -525,6 +524,8 @@ contract BattleManager is ReentrancyGuard {
         address[] memory participants = new address[](participantCount);
         uint256[] memory paymentColonyIds = new uint256[](participantCount);
         uint256[] memory scores = new uint256[](participantCount);
+        (uint256[] memory militaryPowers, uint256 maxMilitaryPower) =
+            _conflictMilitaryPowers(ctx);
         uint256 cursor;
 
         address winner;
@@ -535,7 +536,12 @@ contract BattleManager is ReentrancyGuard {
         for (uint256 i = 0; i < ctx.tablePlayers.length; i++) {
             if (!ctx.inGroup[i]) continue;
 
-            uint256 score = _participantScore(ctx, i);
+            uint256 score = _participantScore(
+                ctx,
+                i,
+                militaryPowers[i],
+                maxMilitaryPower
+            );
 
             participants[cursor] = ctx.tablePlayers[i];
             paymentColonyIds[cursor] = _paymentColonyFor(ctx, i);
@@ -557,7 +563,7 @@ contract BattleManager is ReentrancyGuard {
             ) {
                 winner = ctx.tablePlayers[i];
                 winnerScore = score;
-                winnerColonyId = ctx.actions[i].sourceColonyId;
+                winnerColonyId = _paymentColonyFor(ctx, i);
             }
 
             cursor++;
@@ -619,7 +625,55 @@ contract BattleManager is ReentrancyGuard {
         }
     }
 
-    function _participantScore(ConflictContext memory ctx, uint256 playerIndex)
+    function _conflictMilitaryPowers(ConflictContext memory ctx)
+        internal
+        view
+        returns (uint256[] memory powers, uint256 maxPower)
+    {
+        powers = new uint256[](ctx.tablePlayers.length);
+        for (uint256 i = 0; i < ctx.tablePlayers.length; i++) {
+            if (!ctx.inGroup[i]) continue;
+            uint256 power = _participantMilitaryPower(ctx, i);
+            powers[i] = power;
+            if (power > maxPower) maxPower = power;
+        }
+    }
+
+    function _participantMilitaryPower(
+        ConflictContext memory ctx,
+        uint256 playerIndex
+    ) internal view returns (uint256) {
+        address player = ctx.tablePlayers[playerIndex];
+        GameTypes.Action memory action = ctx.actions[playerIndex];
+        uint256 militaryColonyId = action.sourceColonyId;
+        if (
+            action.actionType == GameTypes.ActionType.DEFEND ||
+            action.actionType == GameTypes.ActionType.BUILD
+        ) {
+            uint256 incomingTargetColonyId = _incomingTargetColonyFor(ctx, player);
+            if (incomingTargetColonyId != 0) {
+                militaryColonyId = incomingTargetColonyId;
+            }
+        }
+
+        if (action.actionType == GameTypes.ActionType.ATTACK) {
+            return IBattleTournamentManager(tournamentManager).getActionAttackPower(
+                player,
+                militaryColonyId
+            );
+        }
+        return IBattleTournamentManager(tournamentManager).getActionDefensePower(
+            player,
+            militaryColonyId
+        );
+    }
+
+    function _participantScore(
+        ConflictContext memory ctx,
+        uint256 playerIndex,
+        uint256 militaryPower,
+        uint256 maxMilitaryPower
+    )
         internal
         view
         returns (uint256)
@@ -639,20 +693,9 @@ contract BattleManager is ReentrancyGuard {
                 )
             ) % RANDOM_SCORE_RANGE
         );
-        uint256 armyColonyId = action.sourceColonyId;
-        if (
-            action.actionType == GameTypes.ActionType.DEFEND ||
-            action.actionType == GameTypes.ActionType.BUILD
-        ) {
-            uint256 incomingTargetColonyId = _incomingTargetColonyFor(ctx, player);
-            if (incomingTargetColonyId != 0) {
-                armyColonyId = incomingTargetColonyId;
-            }
+        if (maxMilitaryPower > 0) {
+            score += militaryPower * MAX_MILITARY_BONUS / maxMilitaryPower;
         }
-        score += IBattleTournamentManager(tournamentManager).getActionArmyBonus(
-            player,
-            armyColonyId
-        );
 
         if (action.actionType == GameTypes.ActionType.ATTACK) {
             uint256 targetIndex = _indexOf(ctx.tablePlayers, action.target);
@@ -661,12 +704,7 @@ contract BattleManager is ReentrancyGuard {
                     ctx.actions[targetIndex].actionType ==
                     GameTypes.ActionType.BUILD
                 ) {
-                    score += ATTACK_VS_BUILD_BONUS;
-                } else if (
-                    ctx.actions[targetIndex].actionType ==
-                    GameTypes.ActionType.DEFEND
-                ) {
-                    score -= ATTACK_VS_DEFEND_PENALTY;
+                    score += BATTLE_BONUS;
                 }
             }
         } else if (action.actionType == GameTypes.ActionType.DEFEND) {
@@ -676,7 +714,7 @@ contract BattleManager is ReentrancyGuard {
                 ctx.actions,
                 ctx.inGroup
             ) > 0) {
-                score += DEFEND_BONUS;
+                score += BATTLE_BONUS;
             }
         }
 

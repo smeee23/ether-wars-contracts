@@ -4,7 +4,7 @@ Smart contracts for an onchain tournament strategy game. Players enter a tournam
 
 ## Project Overview
 
-The current architecture is tournament-based, not a persistent world or insurance protocol. ETH principal and yield/profit are handled at the tournament layer through a generic yield adapter. Gameplay state is virtual: gold, food, water, oxygen, shelter, and army are tracked in contracts and are not ERC20/aToken balances.
+The current architecture is tournament-based, not a persistent world or insurance protocol. ETH principal and yield/profit are handled at the tournament layer through a generic yield adapter. Gameplay state is virtual: gold plus Terraform, Attack, Defense, Mining, and Infrastructure allocations are tracked in contracts and are not ERC20/aToken balances.
 
 ## Current Architecture
 
@@ -38,7 +38,7 @@ WorldGraph
 
 - `contracts/LandLord.sol`
   - Per-colony virtual resource state.
-  - Tracks gold, food, water, oxygen, shelter, army, derived population pressure, build stabilization credits, and gold transfers.
+  - Tracks gold, the five permanent allocations, derived population pressure, Terraform-only BUILD support credits, Mining eligibility, and gold transfers.
   - Does not track buildings or tiles; those are front-end abstractions.
   - Does not hold ETH, aTokens, or yield assets.
 
@@ -74,11 +74,15 @@ Actions:
 - `DEFEND`: default action if a player does not reveal; no wager.
 - `BUILD`: no wager; stores one support stabilization credit on the selected colony.
 
-Attacks are resolved as connected conflict groups within a frozen round table. The largest attack wager in the group becomes the group stake, and participant scores use randomness, a capped army-allocation ratio bonus, and action matchups.
+Attacks are resolved as connected conflict groups within a frozen round table. The largest attack wager in the group becomes the group stake. ATTACK uses only the source colony's Attack allocation; DEFEND and attacked BUILD use only the targeted colony's Defense allocation. Infrastructure improves both through a capped piecewise-linear multiplier.
 
 ## Resource Model
 
-Gold is the main tournament survival currency and the only attack wager. Players can allocate gold directly into food, water, oxygen, shelter, or army at a 1:1 ratio. Food, water, oxygen, shelter, and army are visible capacity resources and do not decay automatically. Population pressure is derived from the round number, adjusted by per-colony BUILD support credits, and support checks eliminate colonies that cannot meet the required capacity.
+Gold is the main tournament survival currency and the only attack wager. Gold spent 1:1 into Terraform, Attack, Defense, Mining, or Infrastructure is permanently removed from the free balance. Allocations persist indefinitely.
+
+Terraform consolidates the former food, water, oxygen, and shelter requirements. Population remains `10 + round`; an uncontested BUILD stores a credit that reduces only Terraform pressure. Each table's weighted lottery removes 5%-20% Terraform from one colony. A Terraform shortage then drains a severity-scaled 15%-30% of free gold, reduced by Infrastructure, and a colony is eliminated if the drain reaches zero gold.
+
+Mining produces 5% virtual gold per completed round, rounded down and calculated per colony. New Mining and its Infrastructure boost become yield-eligible in the following round. Infrastructure uses diminishing piecewise-linear returns, capped at 50% for military and Terraform effects and 30% for Mining.
 
 Expansion creates additional internal colonies for the same tournament player. Colonies do not receive separate table seats, cannot attack independently, and do not change neighbor assignment. A player remains active while at least one owned colony remains active.
 

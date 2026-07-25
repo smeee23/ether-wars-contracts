@@ -3,8 +3,26 @@ pragma solidity 0.8.20;
 
 import {LandLord} from "./LandLord.sol";
 import {IResourceLottery} from "./interfaces/protocol/IResourceLottery.sol";
+import {GameTypes} from "./libraries/GameTypes.sol";
+
+interface IResourceLotteryBattleManager {
+    function revealedRound(address player) external view returns (uint256);
+
+    function revealed(address player)
+        external
+        view
+        returns (
+            GameTypes.ActionType actionType,
+            address target,
+            uint256 amount,
+            uint256 sourceColonyId,
+            uint256 targetColonyId
+        );
+}
 
 interface IResourceLotteryTournament {
+    function battleManager() external view returns (address);
+
     function getTablePlayers(uint256 tableId)
         external
         view
@@ -49,11 +67,8 @@ contract ResourceLottery is IResourceLottery {
     uint256 public constant PENALTY_WEIGHT_NUMERATOR = 100_000_000;
     uint256 public constant MIN_RESOURCE_PENALTY_BPS = 500;
     uint256 public constant MAX_RESOURCE_PENALTY_BPS = 2_000;
-    uint256 private constant SURVIVAL_RESOURCE_COUNT = 4;
     uint256 private constant RESOURCE_PENALTY_DOMAIN =
         uint256(keccak256("weighted-resource-penalty"));
-    uint256 private constant RESOURCE_PENALTY_SELECTION_DOMAIN =
-        uint256(keccak256("weighted-resource-penalty-selection"));
     uint256 private constant RESOURCE_PENALTY_SIZE_DOMAIN =
         uint256(keccak256("weighted-resource-penalty-size"));
 
@@ -75,16 +90,19 @@ contract ResourceLottery is IResourceLottery {
         view
         returns (uint256 resource, uint256 colonyId, uint256 penaltyAmount)
     {
-        resource = _selectResource(roundId, randomness);
+        resource = uint256(LandLord.ResourceType.Terraform);
         IResourceLotteryTournament tournamentState =
             IResourceLotteryTournament(tournament);
         address[] memory players = tournamentState.getTablePlayers(tableId);
+        IResourceLotteryBattleManager battleState =
+            IResourceLotteryBattleManager(tournamentState.battleManager());
         Candidate[] memory candidates = new Candidate[](players.length);
         uint256 candidateCount;
 
         for (uint256 i = 0; i < players.length; i++) {
             (, bool active, , , ) = tournamentState.playerInfo(players[i]);
             if (!active) continue;
+            if (_playedBuild(battleState, players[i], roundId)) continue;
 
             Candidate memory candidate = _buildCandidate(
                 tournamentState,
@@ -131,20 +149,15 @@ contract ResourceLottery is IResourceLottery {
             ) / BASIS_POINTS;
     }
 
-    function _selectResource(uint256 roundId, uint256 randomness)
-        internal
-        pure
-        returns (uint256)
-    {
-        return uint256(
-            keccak256(
-                abi.encode(
-                    randomness,
-                    roundId,
-                    RESOURCE_PENALTY_SELECTION_DOMAIN
-                )
-            )
-        ) % SURVIVAL_RESOURCE_COUNT;
+    function _playedBuild(
+        IResourceLotteryBattleManager battleState,
+        address player,
+        uint256 roundId
+    ) internal view returns (bool) {
+        if (address(battleState) == address(0)) return false;
+        if (battleState.revealedRound(player) != roundId) return false;
+        (GameTypes.ActionType actionType, , , , ) = battleState.revealed(player);
+        return actionType == GameTypes.ActionType.BUILD;
     }
 
     function _buildCandidate(
@@ -230,23 +243,15 @@ contract ResourceLottery is IResourceLottery {
         pure
         returns (uint256)
     {
-        return balances.gold + balances.food + balances.water + balances.oxygen +
-            balances.shelter + balances.army;
+        return uint256(balances.gold) + balances.terraform + balances.attack +
+            balances.defense + balances.mining + balances.infrastructure;
     }
 
     function _resourceBalance(
         LandLord.Resources memory balances,
         uint256 resource
     ) internal pure returns (uint256) {
-        if (resource == uint256(LandLord.ResourceType.Food)) {
-            return balances.food;
-        }
-        if (resource == uint256(LandLord.ResourceType.Water)) {
-            return balances.water;
-        }
-        if (resource == uint256(LandLord.ResourceType.Oxygen)) {
-            return balances.oxygen;
-        }
-        return balances.shelter;
+        require(resource == uint256(LandLord.ResourceType.Terraform), "terraform only");
+        return balances.terraform;
     }
 }

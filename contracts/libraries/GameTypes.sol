@@ -18,11 +18,11 @@ library GameTypes {
 
     struct ColonyAllocation {
         uint256 colonyId;
-        uint256 food;
-        uint256 water;
-        uint256 oxygen;
-        uint256 shelter;
-        uint256 army;
+        uint256 terraform;
+        uint256 attack;
+        uint256 defense;
+        uint256 mining;
+        uint256 infrastructure;
     }
 
     struct RoundPlan {

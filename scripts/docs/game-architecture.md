@@ -62,3 +62,18 @@ surplus; this is an explicit consequence of aggressive live-surplus claiming.
 The production deployment script accepts only Ethereum mainnet, uses canonical
 mainnet stETH by default, and supports `STETH_ADDRESS` and
 `LIDO_REFERRAL_ADDRESS` configuration. Local deployments use `StETHMock`.
+
+## Virtual resource settlement
+
+Gold allocations into Terraform, Attack, Defense, Mining, and Infrastructure
+are permanent and are applied from the committed round plan before battle
+scoring. Attack is offensive-only; Defense is used by DEFEND and attacked BUILD
+actions. An uncontested BUILD stores a support credit that reduces only future
+Terraform pressure.
+
+After every table resolves, finalization runs in bounded phases: Mining yield,
+one weighted Terraform penalty per table, Terraform maintenance and insolvency,
+then table compaction and balancing. Mining and its Infrastructure multiplier
+become eligible one round after purchase. Terraform shortage drains 15%-30% of
+free gold according to shortage severity, with Infrastructure reducing the
+drain. A colony is eliminated when its free gold reaches zero.

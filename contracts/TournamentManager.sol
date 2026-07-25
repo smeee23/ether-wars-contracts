@@ -44,11 +44,11 @@ contract TournamentManager is ReentrancyGuard {
     uint256 public constant DEFAULT_VRF_REQUEST_TIMEOUT = 1 hours;
     uint256 public constant MAX_TABLE_SIZE = 9;
     uint256 public constant STARTING_GOLD = 1000;
-    uint256 public constant STARTING_FOOD = 0;
-    uint256 public constant STARTING_WATER = 0;
-    uint256 public constant STARTING_OXYGEN = 0;
-    uint256 public constant STARTING_SHELTER = 0;
-    uint256 public constant STARTING_ARMY = 0;
+    uint256 public constant STARTING_TERRAFORM = 0;
+    uint256 public constant STARTING_ATTACK = 0;
+    uint256 public constant STARTING_DEFENSE = 0;
+    uint256 public constant STARTING_MINING = 0;
+    uint256 public constant STARTING_INFRASTRUCTURE = 0;
     uint256 public constant BASIS_POINTS = 10_000;
     uint256 private constant MAX_SUPPORT_BATCH_PLAYERS = 25;
     uint256 private constant MAX_PENALTY_BATCH_TABLES = 10;
@@ -67,8 +67,9 @@ contract TournamentManager is ReentrancyGuard {
 
     enum FinalizationPhase {
         None,
-        SupportChecks,
+        MiningSettlement,
         ResourcePenalties,
+        TerraformChecks,
         TableCompaction,
         TableConsolidation,
         BalanceScan,
@@ -502,7 +503,7 @@ contract TournamentManager is ReentrancyGuard {
         }
 
         roundFinalization = RoundFinalization({
-            phase: FinalizationPhase.SupportChecks,
+            phase: FinalizationPhase.MiningSettlement,
             playerCursor: 0,
             tableCursor: 0,
             targetTableCount: 0,
@@ -517,12 +518,12 @@ contract TournamentManager is ReentrancyGuard {
 
     }
 
-    function processSupportBatch(uint256 maxPlayers)
+    function processMiningBatch(uint256 maxPlayers)
         external
         nonReentrant
         inState(TournamentState.Active)
     {
-        _requireFinalizationPhase(FinalizationPhase.SupportChecks);
+        _requireFinalizationPhase(FinalizationPhase.MiningSettlement);
         _requireBatchSize(maxPlayers, MAX_SUPPORT_BATCH_PLAYERS);
 
         uint256 start = roundFinalization.playerCursor;
@@ -530,21 +531,10 @@ contract TournamentManager is ReentrancyGuard {
         if (end > players.length) end = players.length;
 
         for (uint256 i = start; i < end; i++) {
-            _applyPlayerSupportCheck(
-                players[i],
-                lastStartedRound
-            );
+            _applyPlayerMining(players[i], lastStartedRound);
         }
         roundFinalization.playerCursor = end;
         if (end != players.length) return;
-        if (activePlayers <= 1) {
-            uint256 roundId = lastStartedRound;
-            lastEndedRound = roundId;
-            emit RoundEnded(roundId);
-            _completeTournament();
-            return;
-        }
-
         roundFinalization.phase = FinalizationPhase.ResourcePenalties;
         roundFinalization.tableCursor = 1;
     }
@@ -573,6 +563,33 @@ contract TournamentManager is ReentrancyGuard {
         }
         roundFinalization.tableCursor = end;
         if (end != afterLastTable) return;
+        roundFinalization.phase = FinalizationPhase.TerraformChecks;
+        roundFinalization.playerCursor = 0;
+    }
+
+    function processTerraformBatch(uint256 maxPlayers)
+        external
+        nonReentrant
+        inState(TournamentState.Active)
+    {
+        _requireFinalizationPhase(FinalizationPhase.TerraformChecks);
+        _requireBatchSize(maxPlayers, MAX_SUPPORT_BATCH_PLAYERS);
+
+        uint256 start = roundFinalization.playerCursor;
+        uint256 end = start + maxPlayers;
+        if (end > players.length) end = players.length;
+        for (uint256 i = start; i < end; i++) {
+            _applyPlayerTerraformCheck(players[i], lastStartedRound);
+        }
+        roundFinalization.playerCursor = end;
+        if (end != players.length) return;
+        if (activePlayers <= 1) {
+            uint256 roundId = lastStartedRound;
+            lastEndedRound = roundId;
+            emit RoundEnded(roundId);
+            _completeTournament();
+            return;
+        }
         roundFinalization.phase = FinalizationPhase.TableCompaction;
         roundFinalization.tableCursor = 1;
     }
@@ -894,11 +911,11 @@ contract TournamentManager is ReentrancyGuard {
                 }
             }
 
-            uint256 committedGold = allocation.food +
-                allocation.water +
-                allocation.oxygen +
-                allocation.shelter +
-                allocation.army;
+            uint256 committedGold = allocation.terraform +
+                allocation.attack +
+                allocation.defense +
+                allocation.mining +
+                allocation.infrastructure;
             if (
                 plan.action.actionType == GameTypes.ActionType.ATTACK &&
                 plan.action.sourceColonyId == allocation.colonyId
@@ -936,11 +953,11 @@ contract TournamentManager is ReentrancyGuard {
         GameTypes.ColonyAllocation calldata allocation
     ) internal {
         LandLord(colonyInfo[allocation.colonyId].landLord).allocateResources(
-            allocation.food,
-            allocation.water,
-            allocation.oxygen,
-            allocation.shelter,
-            allocation.army
+            allocation.terraform,
+            allocation.attack,
+            allocation.defense,
+            allocation.mining,
+            allocation.infrastructure
         );
     }
 
@@ -1064,25 +1081,25 @@ contract TournamentManager is ReentrancyGuard {
         return LandLord(colony.landLord).getGold();
     }
 
-    function getActionArmy(address player, uint256 colonyId)
+    function getActionAttackPower(address player, uint256 colonyId)
         external
         view
         returns (uint256)
     {
         uint256 resolvedColonyId = _resolveActionColony(player, colonyId);
         if (resolvedColonyId == 0) return 0;
-        return LandLord(colonyInfo[resolvedColonyId].landLord).getResources().army;
+
+        return LandLord(colonyInfo[resolvedColonyId].landLord).effectiveAttack();
     }
 
-    function getActionArmyBonus(address player, uint256 colonyId)
+    function getActionDefensePower(address player, uint256 colonyId)
         external
         view
         returns (uint256)
     {
         uint256 resolvedColonyId = _resolveActionColony(player, colonyId);
         if (resolvedColonyId == 0) return 0;
-
-        return LandLord(colonyInfo[resolvedColonyId].landLord).getArmyBonus();
+        return LandLord(colonyInfo[resolvedColonyId].landLord).effectiveDefense();
     }
 
     function _createColony(address owner) internal returns (uint256 colonyId) {
@@ -1091,16 +1108,17 @@ contract TournamentManager is ReentrancyGuard {
         colonyId = ++nextColonyId;
         address landLordAddress = Clones.clone(landLordImplementation);
         LandLord.Resources memory startingResources = LandLord.Resources({
-            gold: STARTING_GOLD,
-            food: STARTING_FOOD,
-            water: STARTING_WATER,
-            oxygen: STARTING_OXYGEN,
-            shelter: STARTING_SHELTER,
-            army: STARTING_ARMY
+            gold: uint128(STARTING_GOLD),
+            terraform: uint128(STARTING_TERRAFORM),
+            attack: uint128(STARTING_ATTACK),
+            defense: uint128(STARTING_DEFENSE),
+            mining: uint128(STARTING_MINING),
+            infrastructure: uint128(STARTING_INFRASTRUCTURE)
         });
         LandLord(landLordAddress).initialize(
             owner,
             address(this),
+            lastStartedRound,
             startingResources
         );
 
@@ -1363,7 +1381,7 @@ contract TournamentManager is ReentrancyGuard {
         emit PlayerMovedTable(player, sourceTableId, destinationTableId);
     }
 
-    function _applyPlayerSupportCheck(address player, uint256 roundId) internal {
+    function _applyPlayerMining(address player, uint256 roundId) internal {
         if (!playerInfo[player].active) return;
 
         uint256[] memory colonies = playerColonies[player];
@@ -1373,13 +1391,20 @@ contract TournamentManager is ReentrancyGuard {
             if (!colony.active) continue;
             if (!_isColonyAvailableForRound(colonyId, roundId)) continue;
 
-            bool eliminated = LandLord(colony.landLord).applyRoundUpkeep(
-                player,
-                roundId
-            );
-            if (eliminated && colonyInfo[colonyId].active) {
-                _eliminateColony(colonyId);
-            }
+            LandLord(colony.landLord).settleMining(roundId);
+        }
+    }
+
+    function _applyPlayerTerraformCheck(address player, uint256 roundId) internal {
+        if (!playerInfo[player].active) return;
+        uint256[] memory colonies = playerColonies[player];
+        for (uint256 i = 0; i < colonies.length; i++) {
+            uint256 colonyId = colonies[i];
+            ColonyInfo memory colony = colonyInfo[colonyId];
+            if (!colony.active || !_isColonyAvailableForRound(colonyId, roundId)) continue;
+            (, bool eliminated) = LandLord(colony.landLord)
+                .applyTerraformMaintenance(player, roundId);
+            if (eliminated && colonyInfo[colonyId].active) _eliminateColony(colonyId);
         }
     }
 
@@ -1400,7 +1425,7 @@ contract TournamentManager is ReentrancyGuard {
         ColonyInfo memory colony = colonyInfo[colonyId];
         PlayerInfo memory owner = playerInfo[colony.owner];
         if (
-            resource >= uint256(LandLord.ResourceType.Army) ||
+            resource != uint256(LandLord.ResourceType.Terraform) ||
             !colony.active ||
             colony.landLord == address(0) ||
             colony.createdRound >= roundId ||
@@ -1431,10 +1456,8 @@ contract TournamentManager is ReentrancyGuard {
         LandLord.Resources memory balances,
         LandLord.ResourceType resource
     ) internal pure returns (uint256) {
-        if (resource == LandLord.ResourceType.Food) return balances.food;
-        if (resource == LandLord.ResourceType.Water) return balances.water;
-        if (resource == LandLord.ResourceType.Oxygen) return balances.oxygen;
-        return balances.shelter;
+        require(resource == LandLord.ResourceType.Terraform, "terraform only");
+        return balances.terraform;
     }
 
     function _compactTable(uint256 tableId) internal {
