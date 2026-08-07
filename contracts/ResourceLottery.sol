@@ -3,21 +3,9 @@ pragma solidity 0.8.20;
 
 import {LandLord} from "./LandLord.sol";
 import {IResourceLottery} from "./interfaces/protocol/IResourceLottery.sol";
-import {GameTypes} from "./libraries/GameTypes.sol";
 
 interface IResourceLotteryBattleManager {
-    function revealedRound(address player) external view returns (uint256);
-
-    function revealed(address player)
-        external
-        view
-        returns (
-            GameTypes.ActionType actionType,
-            address target,
-            uint256 amount,
-            uint256 sourceColonyId,
-            uint256 targetColonyId
-        );
+    function successfulBuildRound(address player) external view returns (uint256);
 }
 
 interface IResourceLotteryTournament {
@@ -102,7 +90,7 @@ contract ResourceLottery is IResourceLottery {
         for (uint256 i = 0; i < players.length; i++) {
             (, bool active, , , ) = tournamentState.playerInfo(players[i]);
             if (!active) continue;
-            if (_playedBuild(battleState, players[i], roundId)) continue;
+            if (_completedBuild(battleState, players[i], roundId)) continue;
 
             Candidate memory candidate = _buildCandidate(
                 tournamentState,
@@ -149,15 +137,13 @@ contract ResourceLottery is IResourceLottery {
             ) / BASIS_POINTS;
     }
 
-    function _playedBuild(
+    function _completedBuild(
         IResourceLotteryBattleManager battleState,
         address player,
         uint256 roundId
     ) internal view returns (bool) {
         if (address(battleState) == address(0)) return false;
-        if (battleState.revealedRound(player) != roundId) return false;
-        (GameTypes.ActionType actionType, , , , ) = battleState.revealed(player);
-        return actionType == GameTypes.ActionType.BUILD;
+        return battleState.successfulBuildRound(player) == roundId;
     }
 
     function _buildCandidate(

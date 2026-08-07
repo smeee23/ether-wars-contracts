@@ -57,7 +57,6 @@ contract TournamentManager is ReentrancyGuard {
     uint256 private constant MAX_BALANCE_SCAN_TABLES = 50;
     uint256 private constant INITIAL_COLONIES = 1;
     uint256 private constant MAX_COLONIES = 3;
-    uint256 private constant EXPANSION_CLAIM_WINDOW_ROUNDS = 3;
 
     enum TournamentState {
         Registration,
@@ -70,6 +69,7 @@ contract TournamentManager is ReentrancyGuard {
         MiningSettlement,
         ResourcePenalties,
         TerraformChecks,
+        AutomaticExpansions,
         TableCompaction,
         TableConsolidation,
         BalanceScan,
@@ -167,7 +167,6 @@ contract TournamentManager is ReentrancyGuard {
     mapping(address => uint256[]) private playerColonies;
     mapping(address => uint256) public activeColonyCount;
     mapping(address => uint256) public expansionsUsed;
-    mapping(address => uint256) private expansionClaims;
     mapping(uint256 => address[]) private tablePlayers;
     mapping(uint256 => uint256) private activePlayersByTable;
     mapping(uint256 => uint256) public vrfRequestToRound;
@@ -397,21 +396,10 @@ contract TournamentManager is ReentrancyGuard {
     function maxUnlockedExpansions() public view returns (uint256) {
         if (state != TournamentState.Active || initialPlayerCount == 0) return 0;
         uint256 roundId = lastStartedRound;
-        uint256 unlocked;
-
-        if (roundId > 0 && roundId <= EXPANSION_CLAIM_WINDOW_ROUNDS) {
-            unlocked++;
-        }
-
-        if (
-            expansionUnlockRound != 0 &&
-            roundId > expansionUnlockRound &&
-            roundId <= expansionUnlockRound + EXPANSION_CLAIM_WINDOW_ROUNDS
-        ) {
-            unlocked++;
-        }
-
-        return unlocked;
+        if (roundId == 0) return 0;
+        return expansionUnlockRound != 0 && roundId > expansionUnlockRound
+            ? 2
+            : 1;
     }
 
     function completeTournament()
@@ -590,6 +578,36 @@ contract TournamentManager is ReentrancyGuard {
             _completeTournament();
             return;
         }
+        roundFinalization.phase = FinalizationPhase.AutomaticExpansions;
+        roundFinalization.playerCursor = 0;
+    }
+
+    function processAutomaticExpansionBatch(uint256 maxPlayers)
+        external
+        inState(TournamentState.Active)
+    {
+        _requireFinalizationPhase(FinalizationPhase.AutomaticExpansions);
+        _requireBatchSize(maxPlayers, MAX_SUPPORT_BATCH_PLAYERS);
+
+        uint256 start = roundFinalization.playerCursor;
+        uint256 end = start + maxPlayers;
+        if (end > players.length) end = players.length;
+
+        uint256 unlocked = maxUnlockedExpansions();
+        for (uint256 i = start; i < end; i++) {
+            address player = players[i];
+            if (!playerInfo[player].active) continue;
+            while (
+                expansionsUsed[player] < unlocked &&
+                activeColonyCount[player] < MAX_COLONIES
+            ) {
+                expansionsUsed[player]++;
+                _createColony(player);
+            }
+        }
+
+        roundFinalization.playerCursor = end;
+        if (end != players.length) return;
         roundFinalization.phase = FinalizationPhase.TableCompaction;
         roundFinalization.tableCursor = 1;
     }
@@ -895,11 +913,6 @@ contract TournamentManager is ReentrancyGuard {
         if (roundId == 0 || roundId != lastStartedRound) return false;
         if (plan.allocations.length > MAX_COLONIES) return false;
 
-        if (plan.claimExpansion) {
-            if (_claimableExpansionSlot(player) == 0) return false;
-            if (activeColonyCount[player] >= MAX_COLONIES) return false;
-        }
-
         for (uint256 i = 0; i < plan.allocations.length; i++) {
             GameTypes.ColonyAllocation calldata allocation = plan.allocations[i];
             if (!_ownsActiveColony(player, allocation.colonyId)) return false;
@@ -941,12 +954,6 @@ contract TournamentManager is ReentrancyGuard {
             _applyColonyAllocation(plan.allocations[i]);
         }
 
-        if (plan.claimExpansion) {
-            uint256 expansionSlot = _claimableExpansionSlot(player);
-            expansionClaims[player] |= expansionSlot;
-            expansionsUsed[player]++;
-            _createColony(player);
-        }
     }
 
     function _applyColonyAllocation(
@@ -1159,30 +1166,6 @@ contract TournamentManager is ReentrancyGuard {
         if (colonyId == 0) return _firstActiveColony(owner);
         if (!_ownsActiveColony(owner, colonyId)) return 0;
         return colonyId;
-    }
-
-    function _claimableExpansionSlot(address player) internal view returns (uint256) {
-        uint256 roundId = lastStartedRound;
-        uint256 claims = expansionClaims[player];
-
-        if (
-            roundId > 0 &&
-            roundId <= EXPANSION_CLAIM_WINDOW_ROUNDS &&
-            (claims & 1) == 0
-        ) {
-            return 1;
-        }
-
-        if (
-            expansionUnlockRound != 0 &&
-            roundId > expansionUnlockRound &&
-            roundId <= expansionUnlockRound + EXPANSION_CLAIM_WINDOW_ROUNDS &&
-            (claims & 2) == 0
-        ) {
-            return 2;
-        }
-
-        return 0;
     }
 
     function _isColonyAvailableForRound(uint256 colonyId, uint256 roundId)

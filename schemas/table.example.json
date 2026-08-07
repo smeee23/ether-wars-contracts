@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "chainId": "1",
+  "tournamentAddress": "0x1111111111111111111111111111111111111111",
+  "tournamentId": "42",
+  "snapshot": {
+    "id": "8-23847192",
+    "blockNumber": "23847192",
+    "blockHash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "timestamp": "1785950000"
+  },
+  "roundId": "8",
+  "tableId": "3",
+  "active": true,
+  "players": [
+    {
+      "playerId": "12",
+      "address": "0x5555555555555555555555555555555555555555",
+      "seat": {
+        "index": "0",
+        "derived": true
+      },
+      "active": true
+    }
+  ],
+  "currentRoundResolved": false,
+  "previousConflictGroups": [
+    {
+      "roundId": "7",
+      "groupHash": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "winnerAddress": "0x5555555555555555555555555555555555555555",
+      "winnerColonyId": "1",
+      "winnerScore": "184",
+      "groupStake": "120",
+      "totalGoldTransferred": "120",
+      "participants": [
+        {
+          "playerId": "12",
+          "address": "0x5555555555555555555555555555555555555555",
+          "action": "ATTACK",
+          "targetAddress": "0x7777777777777777777777777777777777777777",
+          "sourceColonyId": "1",
+          "targetColonyId": "4",
+          "wager": "120",
+          "score": "184",
+          "goldPaid": "0"
+        },
+        {
+          "playerId": "19",
+          "address": "0x7777777777777777777777777777777777777777",
+          "action": "DEFEND",
+          "targetAddress": null,
+          "sourceColonyId": null,
+          "targetColonyId": "4",
+          "wager": "0",
+          "score": "142",
+          "goldPaid": "120"
+        }
+      ],
+      "colonyEliminations": [
+        {
+          "colonyId": "4",
+          "ownerAddress": "0x7777777777777777777777777777777777777777"
+        }
+      ],
+      "playerEliminations": [
+        {
+          "playerId": "19",
+          "address": "0x7777777777777777777777777777777777777777"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,112 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "table.schema.json",
+  "title": "Ether Wars table snapshot",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "chainId", "tournamentAddress", "tournamentId", "snapshot",
+    "roundId", "tableId", "active", "players", "currentRoundResolved", "previousConflictGroups"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "chainId": { "$ref": "definitions.schema.json#/definitions/uintString" },
+    "tournamentAddress": { "$ref": "definitions.schema.json#/definitions/address" },
+    "tournamentId": { "$ref": "definitions.schema.json#/definitions/uintString" },
+    "snapshot": { "$ref": "definitions.schema.json#/definitions/snapshot" },
+    "roundId": { "$ref": "definitions.schema.json#/definitions/uintString" },
+    "tableId": { "$ref": "definitions.schema.json#/definitions/uintString" },
+    "active": { "type": "boolean" },
+    "players": {
+      "type": "array",
+      "maxItems": 9,
+      "items": { "$ref": "#/definitions/tablePlayer" }
+    },
+    "currentRoundResolved": { "type": "boolean" },
+    "previousConflictGroups": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/conflictGroup" }
+    }
+  },
+  "definitions": {
+    "tablePlayer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["playerId", "address", "seat", "active"],
+      "properties": {
+        "playerId": { "$ref": "definitions.schema.json#/definitions/uintString" },
+        "address": { "$ref": "definitions.schema.json#/definitions/address" },
+        "seat": { "$ref": "definitions.schema.json#/definitions/seat" },
+        "active": { "type": "boolean" }
+      }
+    },
+    "participant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "playerId", "address", "action", "targetAddress", "sourceColonyId",
+        "targetColonyId", "wager", "score", "goldPaid"
+      ],
+      "properties": {
+        "playerId": { "$ref": "definitions.schema.json#/definitions/uintString" },
+        "address": { "$ref": "definitions.schema.json#/definitions/address" },
+        "action": { "$ref": "definitions.schema.json#/definitions/actionType" },
+        "targetAddress": { "$ref": "definitions.schema.json#/definitions/nullableAddress" },
+        "sourceColonyId": { "$ref": "definitions.schema.json#/definitions/nullableUintString" },
+        "targetColonyId": { "$ref": "definitions.schema.json#/definitions/nullableUintString" },
+        "wager": { "$ref": "definitions.schema.json#/definitions/uintString" },
+        "score": { "$ref": "definitions.schema.json#/definitions/uintString" },
+        "goldPaid": { "$ref": "definitions.schema.json#/definitions/uintString" }
+      }
+    },
+    "colonyElimination": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["colonyId", "ownerAddress"],
+      "properties": {
+        "colonyId": { "$ref": "definitions.schema.json#/definitions/uintString" },
+        "ownerAddress": { "$ref": "definitions.schema.json#/definitions/address" }
+      }
+    },
+    "playerElimination": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["playerId", "address"],
+      "properties": {
+        "playerId": { "$ref": "definitions.schema.json#/definitions/uintString" },
+        "address": { "$ref": "definitions.schema.json#/definitions/address" }
+      }
+    },
+    "conflictGroup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "roundId", "groupHash", "winnerAddress", "winnerColonyId", "winnerScore",
+        "groupStake", "totalGoldTransferred", "participants", "colonyEliminations",
+        "playerEliminations"
+      ],
+      "properties": {
+        "roundId": { "$ref": "definitions.schema.json#/definitions/uintString" },
+        "groupHash": { "$ref": "definitions.schema.json#/definitions/bytes32" },
+        "winnerAddress": { "$ref": "definitions.schema.json#/definitions/address" },
+        "winnerColonyId": { "$ref": "definitions.schema.json#/definitions/uintString" },
+        "winnerScore": { "$ref": "definitions.schema.json#/definitions/uintString" },
+        "groupStake": { "$ref": "definitions.schema.json#/definitions/uintString" },
+        "totalGoldTransferred": { "$ref": "definitions.schema.json#/definitions/uintString" },
+        "participants": {
+          "type": "array",
+          "minItems": 2,
+          "items": { "$ref": "#/definitions/participant" }
+        },
+        "colonyEliminations": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/colonyElimination" }
+        },
+        "playerEliminations": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/playerElimination" }
+        }
+      }
+    }
+  }
+}

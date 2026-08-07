@@ -42,8 +42,6 @@ contract LandLord is Initializable {
     uint256 public constant MIN_TERRAFORM_DRAIN_BPS = 1_500;
     uint256 public constant MAX_TERRAFORM_DRAIN_BPS = 3_000;
     uint256 public constant MINING_YIELD_BPS = 500;
-    uint256 public constant MAX_MILITARY_BONUS = 20;
-    uint256 public constant MILITARY_CAPACITY_PER_POINT = 25;
 
     // Piecewise-linear Infrastructure curve: 10 bps/unit through 100,
     // 5 bps/unit through 500, then 2 bps/unit, capped at 50%.
@@ -281,16 +279,6 @@ contract LandLord is Initializable {
 
     function effectiveDefense() public view returns (uint256) {
         return _effectiveCapacity(resources.defense, resources.infrastructure);
-    }
-
-    function getAttackBonus() external view returns (uint256) {
-        uint256 bonus = effectiveAttack() / MILITARY_CAPACITY_PER_POINT;
-        return bonus > MAX_MILITARY_BONUS ? MAX_MILITARY_BONUS : bonus;
-    }
-
-    function getDefenseBonus() external view returns (uint256) {
-        uint256 bonus = effectiveDefense() / MILITARY_CAPACITY_PER_POINT;
-        return bonus > MAX_MILITARY_BONUS ? MAX_MILITARY_BONUS : bonus;
     }
 
     function previewMiningYield() public view returns (uint256) {

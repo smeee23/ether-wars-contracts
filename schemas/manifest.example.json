@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "chainId": "1",
+  "tournamentAddress": "0x1111111111111111111111111111111111111111",
+  "tournamentId": "42",
+  "currentRound": "8",
+  "snapshot": {
+    "id": "8-23847192",
+    "blockNumber": "23847192",
+    "blockHash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "timestamp": "1785950000"
+  },
+  "publishedAt": "2026-08-05T17:20:00Z",
+  "paths": {
+    "tournament": "./tournament.json",
+    "tables": "./tables/{tableId}.json",
+    "players": "./players/{playerId}.json"
+  }
+}

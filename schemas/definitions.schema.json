@@ -1,0 +1,65 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "definitions.schema.json",
+  "title": "Ether Wars shared schema definitions",
+  "definitions": {
+    "uintString": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)$"
+    },
+    "address": {
+      "type": "string",
+      "pattern": "^0x[0-9a-fA-F]{40}$"
+    },
+    "bytes32": {
+      "type": "string",
+      "pattern": "^0x[0-9a-fA-F]{64}$"
+    },
+    "nullableAddress": {
+      "anyOf": [
+        { "$ref": "#/definitions/address" },
+        { "type": "null" }
+      ]
+    },
+    "nullableUintString": {
+      "anyOf": [
+        { "$ref": "#/definitions/uintString" },
+        { "type": "null" }
+      ]
+    },
+    "snapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "blockNumber", "blockHash", "timestamp"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "blockNumber": { "$ref": "#/definitions/uintString" },
+        "blockHash": { "$ref": "#/definitions/bytes32" },
+        "timestamp": { "$ref": "#/definitions/uintString" }
+      }
+    },
+    "documentIdentity": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": { "type": "integer", "const": 1 },
+        "chainId": { "$ref": "#/definitions/uintString" },
+        "tournamentAddress": { "$ref": "#/definitions/address" },
+        "tournamentId": { "$ref": "#/definitions/uintString" },
+        "snapshot": { "$ref": "#/definitions/snapshot" }
+      }
+    },
+    "seat": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["index", "derived"],
+      "properties": {
+        "index": { "$ref": "#/definitions/uintString" },
+        "derived": { "type": "boolean", "const": true }
+      }
+    },
+    "actionType": {
+      "type": "string",
+      "enum": ["ATTACK", "DEFEND", "BUILD"]
+    }
+  }
+}

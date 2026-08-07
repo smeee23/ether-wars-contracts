@@ -69,14 +69,6 @@ describe("LandLord five-resource model", function () {
     expect((await landLord.getGold()).toString()).to.equal("99");
   });
 
-  it("uses Attack only for attack bonus and Defense only for defense bonus", async function () {
-    const { landLord } = await deployLandLord({
-      gold: 0, attack: 250, defense: 500, infrastructure: 0,
-    });
-    expect((await landLord.getAttackBonus()).toString()).to.equal("10");
-    expect((await landLord.getDefenseBonus()).toString()).to.equal("20");
-  });
-
   it("applies the piecewise Infrastructure curve and effect caps", async function () {
     const { landLord } = await deployLandLord({ infrastructure: 100 });
     expect((await landLord.infrastructureBonusBps(99)).toString()).to.equal("990");

@@ -28,6 +28,5 @@ library GameTypes {
     struct RoundPlan {
         Action action;
         ColonyAllocation[] allocations;
-        bool claimExpansion;
     }
 }

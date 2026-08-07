@@ -72,19 +72,19 @@ Actions:
 
 - `ATTACK`: targets an active player at the same frozen round table, selects the attacker's source colony and defender's target colony, and includes a positive gold wager.
 - `DEFEND`: default action if a player does not reveal; no wager.
-- `BUILD`: no wager; stores one support stabilization credit on the selected colony.
+- `BUILD`: no wager; an uncontested BUILD stores one support stabilization credit on every active colony.
 
-Attacks are resolved as connected conflict groups within a frozen round table. The largest attack wager in the group becomes the group stake. ATTACK uses only the source colony's Attack allocation; DEFEND and attacked BUILD use only the targeted colony's Defense allocation. Infrastructure improves both through a capped piecewise-linear multiplier.
+Attacks are resolved as connected conflict groups within a frozen round table. The largest attack wager in the group becomes the group stake. ATTACK uses only the source colony's Attack allocation; DEFEND and attacked BUILD use only the targeted colony's Defense allocation. Infrastructure improves both through a capped piecewise-linear multiplier. Attacking a BUILD action adds 50 score, while an attacked DEFEND action adds 25 score.
 
 ## Resource Model
 
 Gold is the main tournament survival currency and the only attack wager. Gold spent 1:1 into Terraform, Attack, Defense, Mining, or Infrastructure is permanently removed from the free balance. Allocations persist indefinitely.
 
-Terraform consolidates the former food, water, oxygen, and shelter requirements. Population remains `10 + round`; an uncontested BUILD stores a credit that reduces only Terraform pressure. Each table's weighted lottery removes 5%-20% Terraform from one colony. A Terraform shortage then drains a severity-scaled 15%-30% of free gold, reduced by Infrastructure, and a colony is eliminated if the drain reaches zero gold.
+Terraform consolidates the former food, water, oxygen, and shelter requirements. Population remains `10 + round`; an uncontested BUILD stores a credit that reduces only Terraform pressure and exempts its player from that round's lottery. Each table's weighted lottery removes 5%-20% Terraform from one colony. A Terraform shortage then drains a severity-scaled 15%-30% of free gold, reduced by Infrastructure, and a colony is eliminated if the drain reaches zero gold.
 
 Mining produces 5% virtual gold per completed round, rounded down and calculated per colony. New Mining and its Infrastructure boost become yield-eligible in the following round. Infrastructure uses diminishing piecewise-linear returns, capped at 50% for military and Terraform effects and 30% for Mining.
 
-Expansion creates additional internal colonies for the same tournament player. Colonies do not receive separate table seats, cannot attack independently, and do not change neighbor assignment. A player remains active while at least one owned colony remains active.
+Expansion automatically creates additional internal colonies for every active tournament player during batched round finalization. The first expansion is granted after round 1; the second is granted in a later round after active players fall to half the initial field. New colonies activate the following round. Colonies do not receive separate table seats, cannot attack independently, and do not change neighbor assignment. A player remains active while at least one owned colony remains active.
 
 LandLord owns gameplay accounting only. ETH principal, yield, and adapter shares stay in TournamentManager/yield adapter logic.
 

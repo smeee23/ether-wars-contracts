@@ -1,0 +1,36 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "manifest.schema.json",
+  "title": "Ether Wars snapshot manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "chainId",
+    "tournamentAddress",
+    "tournamentId",
+    "currentRound",
+    "snapshot",
+    "publishedAt",
+    "paths"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "chainId": { "$ref": "definitions.schema.json#/definitions/uintString" },
+    "tournamentAddress": { "$ref": "definitions.schema.json#/definitions/address" },
+    "tournamentId": { "$ref": "definitions.schema.json#/definitions/uintString" },
+    "currentRound": { "$ref": "definitions.schema.json#/definitions/uintString" },
+    "snapshot": { "$ref": "definitions.schema.json#/definitions/snapshot" },
+    "publishedAt": { "type": "string", "format": "date-time" },
+    "paths": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tournament", "tables", "players"],
+      "properties": {
+        "tournament": { "type": "string", "minLength": 1 },
+        "tables": { "type": "string", "pattern": "\\{tableId\\}" },
+        "players": { "type": "string", "pattern": "\\{playerId\\}" }
+      }
+    }
+  }
+}

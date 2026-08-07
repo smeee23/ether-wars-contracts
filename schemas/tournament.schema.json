@@ -1,0 +1,97 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "tournament.schema.json",
+  "title": "Ether Wars tournament snapshot",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "chainId", "tournamentAddress", "tournamentId", "snapshot",
+    "status", "phase", "finalizationPhase", "currentRound", "lastCompletedRound",
+    "roundTiming", "entrantCount", "initialPlayerCount", "activePlayerCount",
+    "tableCount", "activeTableCount", "entryDeposit", "contracts", "randomness",
+    "expansionUnlockRound", "winnerAddress", "yieldAccounting", "lifecycleBlocks"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "chainId": { "$ref": "definitions.schema.json#/definitions/uintString" },
+    "tournamentAddress": { "$ref": "definitions.schema.json#/definitions/address" },
+    "tournamentId": { "$ref": "definitions.schema.json#/definitions/uintString" },
+    "snapshot": { "$ref": "definitions.schema.json#/definitions/snapshot" },
+    "status": { "type": "string", "enum": ["REGISTRATION", "ACTIVE", "COMPLETE"] },
+    "phase": { "type": "string", "enum": ["COMMIT", "REVEAL", "RESOLVE"] },
+    "finalizationPhase": {
+      "type": "string",
+      "enum": [
+        "NONE", "MINING_SETTLEMENT", "RESOURCE_PENALTIES", "TERRAFORM_CHECKS", "AUTOMATIC_EXPANSIONS",
+        "TABLE_COMPACTION", "TABLE_CONSOLIDATION", "BALANCE_SCAN", "BALANCE_MOVE",
+        "READY_TO_FINALIZE"
+      ]
+    },
+    "currentRound": { "$ref": "definitions.schema.json#/definitions/uintString" },
+    "lastCompletedRound": { "$ref": "definitions.schema.json#/definitions/uintString" },
+    "roundTiming": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commitStartTimestamp", "commitEndTimestamp", "revealStartTimestamp", "revealEndTimestamp"],
+      "properties": {
+        "commitStartTimestamp": { "$ref": "definitions.schema.json#/definitions/uintString" },
+        "commitEndTimestamp": { "$ref": "definitions.schema.json#/definitions/uintString" },
+        "revealStartTimestamp": { "$ref": "definitions.schema.json#/definitions/uintString" },
+        "revealEndTimestamp": { "$ref": "definitions.schema.json#/definitions/uintString" }
+      }
+    },
+    "entrantCount": { "$ref": "definitions.schema.json#/definitions/uintString" },
+    "initialPlayerCount": { "$ref": "definitions.schema.json#/definitions/uintString" },
+    "activePlayerCount": { "$ref": "definitions.schema.json#/definitions/uintString" },
+    "tableCount": { "$ref": "definitions.schema.json#/definitions/uintString" },
+    "activeTableCount": { "$ref": "definitions.schema.json#/definitions/uintString" },
+    "entryDeposit": { "$ref": "definitions.schema.json#/definitions/uintString" },
+    "contracts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["battleManager", "vrfProvider", "yieldAdapter"],
+      "properties": {
+        "battleManager": { "$ref": "definitions.schema.json#/definitions/address" },
+        "vrfProvider": { "$ref": "definitions.schema.json#/definitions/address" },
+        "yieldAdapter": { "$ref": "definitions.schema.json#/definitions/address" }
+      }
+    },
+    "randomness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "requestId", "attempts", "requestedAt", "fulfilled", "retryEligible"],
+      "properties": {
+        "value": { "$ref": "definitions.schema.json#/definitions/nullableUintString" },
+        "requestId": { "$ref": "definitions.schema.json#/definitions/nullableUintString" },
+        "attempts": { "$ref": "definitions.schema.json#/definitions/uintString" },
+        "requestedAt": { "$ref": "definitions.schema.json#/definitions/nullableUintString" },
+        "fulfilled": { "type": "boolean" },
+        "retryEligible": { "type": "boolean" }
+      }
+    },
+    "expansionUnlockRound": { "$ref": "definitions.schema.json#/definitions/nullableUintString" },
+    "winnerAddress": { "$ref": "definitions.schema.json#/definitions/nullableAddress" },
+    "yieldAccounting": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["totalPrincipal", "outstandingPrincipal", "totalPrincipalClaimed", "totalYieldClaimed", "availableYield"],
+      "properties": {
+        "totalPrincipal": { "$ref": "definitions.schema.json#/definitions/uintString" },
+        "outstandingPrincipal": { "$ref": "definitions.schema.json#/definitions/uintString" },
+        "totalPrincipalClaimed": { "$ref": "definitions.schema.json#/definitions/uintString" },
+        "totalYieldClaimed": { "$ref": "definitions.schema.json#/definitions/uintString" },
+        "availableYield": { "$ref": "definitions.schema.json#/definitions/uintString" }
+      }
+    },
+    "lifecycleBlocks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tournamentStart", "tournamentEnd", "lastRoundFinalized"],
+      "properties": {
+        "tournamentStart": { "$ref": "definitions.schema.json#/definitions/nullableUintString" },
+        "tournamentEnd": { "$ref": "definitions.schema.json#/definitions/nullableUintString" },
+        "lastRoundFinalized": { "$ref": "definitions.schema.json#/definitions/nullableUintString" }
+      }
+    }
+  }
+}

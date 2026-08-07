@@ -1,0 +1,174 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "player.schema.json",
+  "title": "Ether Wars player snapshot",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "chainId", "tournamentAddress", "tournamentId", "snapshot",
+    "playerId", "address", "registered", "active", "eliminatedRound", "tableId",
+    "seat", "activeColonyCount", "expansionsUsed", "principal",
+    "colonies", "roundState", "neighbors"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "chainId": { "$ref": "definitions.schema.json#/definitions/uintString" },
+    "tournamentAddress": { "$ref": "definitions.schema.json#/definitions/address" },
+    "tournamentId": { "$ref": "definitions.schema.json#/definitions/uintString" },
+    "snapshot": { "$ref": "definitions.schema.json#/definitions/snapshot" },
+    "playerId": { "$ref": "definitions.schema.json#/definitions/uintString" },
+    "address": { "$ref": "definitions.schema.json#/definitions/address" },
+    "registered": { "type": "boolean" },
+    "active": { "type": "boolean" },
+    "eliminatedRound": { "$ref": "definitions.schema.json#/definitions/nullableUintString" },
+    "tableId": { "$ref": "definitions.schema.json#/definitions/uintString" },
+    "seat": { "$ref": "definitions.schema.json#/definitions/seat" },
+    "activeColonyCount": { "$ref": "definitions.schema.json#/definitions/uintString" },
+    "expansionsUsed": { "$ref": "definitions.schema.json#/definitions/uintString" },
+    "principal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["amount", "claimed", "claimable"],
+      "properties": {
+        "amount": { "$ref": "definitions.schema.json#/definitions/uintString" },
+        "claimed": { "type": "boolean" },
+        "claimable": { "$ref": "definitions.schema.json#/definitions/uintString" }
+      }
+    },
+    "colonies": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/colony" }
+    },
+    "roundState": { "$ref": "#/definitions/roundState" },
+    "neighbors": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/neighbor" }
+    }
+  },
+  "definitions": {
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["terraform", "attack", "defense", "mining", "infrastructure"],
+      "properties": {
+        "terraform": { "$ref": "definitions.schema.json#/definitions/uintString" },
+        "attack": { "$ref": "definitions.schema.json#/definitions/uintString" },
+        "defense": { "$ref": "definitions.schema.json#/definitions/uintString" },
+        "mining": { "$ref": "definitions.schema.json#/definitions/uintString" },
+        "infrastructure": { "$ref": "definitions.schema.json#/definitions/uintString" }
+      }
+    },
+    "colony": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "colonyId", "landLordAddress", "active", "createdRound", "availableThisRound",
+        "gold", "resources", "settlementState", "stats", "economy", "worldState"
+      ],
+      "properties": {
+        "colonyId": { "$ref": "definitions.schema.json#/definitions/uintString" },
+        "landLordAddress": { "$ref": "definitions.schema.json#/definitions/address" },
+        "active": { "type": "boolean" },
+        "createdRound": { "$ref": "definitions.schema.json#/definitions/uintString" },
+        "availableThisRound": { "type": "boolean" },
+        "gold": { "$ref": "definitions.schema.json#/definitions/uintString" },
+        "resources": { "$ref": "#/definitions/resources" },
+        "settlementState": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["supportCredits", "lastMiningRound", "lastTerraformRound", "eligibleMining", "eligibleInfrastructure"],
+          "properties": {
+            "supportCredits": { "$ref": "definitions.schema.json#/definitions/uintString" },
+            "lastMiningRound": { "$ref": "definitions.schema.json#/definitions/uintString" },
+            "lastTerraformRound": { "$ref": "definitions.schema.json#/definitions/uintString" },
+            "eligibleMining": { "$ref": "definitions.schema.json#/definitions/uintString" },
+            "eligibleInfrastructure": { "$ref": "definitions.schema.json#/definitions/uintString" }
+          }
+        },
+        "stats": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["population", "attackPower", "defensePower", "miningYield", "infrastructureBonusBps", "miningInfrastructureBonusBps"],
+          "properties": {
+            "population": { "$ref": "definitions.schema.json#/definitions/uintString" },
+            "attackPower": { "$ref": "definitions.schema.json#/definitions/uintString" },
+            "defensePower": { "$ref": "definitions.schema.json#/definitions/uintString" },
+            "miningYield": { "$ref": "definitions.schema.json#/definitions/uintString" },
+            "infrastructureBonusBps": { "$ref": "definitions.schema.json#/definitions/uintString" },
+            "miningInfrastructureBonusBps": { "$ref": "definitions.schema.json#/definitions/uintString" }
+          }
+        },
+        "economy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["baseMiningYield", "projectedMiningYield", "terraformRequirement", "terraformShortage", "projectedTerraformGoldDrain", "projectedNetGoldChange", "canSupportRound"],
+          "properties": {
+            "baseMiningYield": { "$ref": "definitions.schema.json#/definitions/uintString" },
+            "projectedMiningYield": { "$ref": "definitions.schema.json#/definitions/uintString" },
+            "terraformRequirement": { "$ref": "definitions.schema.json#/definitions/uintString" },
+            "terraformShortage": { "$ref": "definitions.schema.json#/definitions/uintString" },
+            "projectedTerraformGoldDrain": { "$ref": "definitions.schema.json#/definitions/uintString" },
+            "projectedNetGoldChange": {
+              "type": "string",
+              "pattern": "^-?(0|[1-9][0-9]*)$"
+            },
+            "canSupportRound": { "type": "boolean" }
+          }
+        },
+        "worldState": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["version", "buildings"],
+          "properties": {
+            "version": { "type": "integer", "minimum": 1 },
+            "buildings": {
+              "type": "array",
+              "description": "UI-only building data; not canonical contract state.",
+              "items": { "type": "object" }
+            }
+          }
+        }
+      }
+    },
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "targetAddress", "wager", "sourceColonyId", "targetColonyId"],
+      "properties": {
+        "type": { "$ref": "definitions.schema.json#/definitions/actionType" },
+        "targetAddress": { "$ref": "definitions.schema.json#/definitions/nullableAddress" },
+        "wager": { "$ref": "definitions.schema.json#/definitions/uintString" },
+        "sourceColonyId": { "$ref": "definitions.schema.json#/definitions/nullableUintString" },
+        "targetColonyId": { "$ref": "definitions.schema.json#/definitions/nullableUintString" }
+      }
+    },
+    "roundState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["roundId", "committed", "revealed", "planApplied", "actionStatus", "action"],
+      "properties": {
+        "roundId": { "$ref": "definitions.schema.json#/definitions/uintString" },
+        "committed": { "type": "boolean" },
+        "revealed": { "type": "boolean" },
+        "planApplied": { "type": "boolean" },
+        "actionStatus": { "type": "string", "enum": ["NONE", "COMMITTED", "REVEALED", "APPLIED"] },
+        "action": {
+          "anyOf": [
+            { "$ref": "#/definitions/action" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "neighbor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["playerId", "address", "publicStatePath"],
+      "properties": {
+        "playerId": { "$ref": "definitions.schema.json#/definitions/uintString" },
+        "address": { "$ref": "definitions.schema.json#/definitions/address" },
+        "publicStatePath": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

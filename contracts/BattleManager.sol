@@ -61,7 +61,8 @@ contract BattleManager is ReentrancyGuard {
     uint256 public constant REVEAL_DURATION = 2 hours;
     uint256 public constant BASE_SCORE = 100;
     uint256 public constant RANDOM_SCORE_RANGE = 100;
-    uint256 public constant BATTLE_BONUS = 25;
+    uint256 public constant DEFEND_BONUS = 25;
+    uint256 public constant BUILD_VULNERABILITY_BONUS = 50;
     uint256 public constant MAX_MILITARY_BONUS = 20;
 
     // =========================
@@ -118,7 +119,7 @@ contract BattleManager is ReentrancyGuard {
     mapping(address => GameTypes.Action) public revealed;
     mapping(address => uint256) public revealedRound;
     mapping(address => GameTypes.ColonyAllocation[]) private revealedAllocations;
-    mapping(address => bool) public revealedExpansionClaim;
+    mapping(address => uint256) public successfulBuildRound;
 
     mapping(uint256 => uint256) public tableResolvedRound;
     mapping(uint256 => uint256) public roundRequiredTableCount;
@@ -406,7 +407,6 @@ contract BattleManager is ReentrancyGuard {
         for (uint256 i = 0; i < plan.allocations.length; i++) {
             revealedAllocations[player].push(plan.allocations[i]);
         }
-        revealedExpansionClaim[player] = plan.claimExpansion;
         revealedRound[player] = currentRound;
 
         emit Revealed(player, currentRound);
@@ -450,8 +450,7 @@ contract BattleManager is ReentrancyGuard {
 
         GameTypes.RoundPlan memory plan = GameTypes.RoundPlan({
             action: revealed[player],
-            allocations: allocations,
-            claimExpansion: revealedExpansionClaim[player]
+            allocations: allocations
         });
         IBattleTournamentManager(tournamentManager).applyRoundPlan(
             player,
@@ -704,7 +703,7 @@ contract BattleManager is ReentrancyGuard {
                     ctx.actions[targetIndex].actionType ==
                     GameTypes.ActionType.BUILD
                 ) {
-                    score += BATTLE_BONUS;
+                    score += BUILD_VULNERABILITY_BONUS;
                 }
             }
         } else if (action.actionType == GameTypes.ActionType.DEFEND) {
@@ -714,7 +713,7 @@ contract BattleManager is ReentrancyGuard {
                 ctx.actions,
                 ctx.inGroup
             ) > 0) {
-                score += BATTLE_BONUS;
+                score += DEFEND_BONUS;
             }
         }
 
@@ -746,6 +745,7 @@ contract BattleManager is ReentrancyGuard {
             if (actions[i].actionType != GameTypes.ActionType.BUILD) continue;
             if (_hasIncomingAttack(tablePlayers[i], tablePlayers, actions)) continue;
 
+            successfulBuildRound[tablePlayers[i]] = currentRound;
             IBattleTournamentManager(tournamentManager).applyBuildAction(
                 tablePlayers[i],
                 currentRound

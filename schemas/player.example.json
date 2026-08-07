@@ -1,0 +1,89 @@
+{
+  "schemaVersion": 1,
+  "chainId": "1",
+  "tournamentAddress": "0x1111111111111111111111111111111111111111",
+  "tournamentId": "42",
+  "snapshot": {
+    "id": "8-23847192",
+    "blockNumber": "23847192",
+    "blockHash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "timestamp": "1785950000"
+  },
+  "playerId": "12",
+  "address": "0x5555555555555555555555555555555555555555",
+  "registered": true,
+  "active": true,
+  "eliminatedRound": null,
+  "tableId": "3",
+  "seat": {
+    "index": "0",
+    "derived": true
+  },
+  "activeColonyCount": "1",
+  "expansionsUsed": "1",
+  "principal": {
+    "amount": "10000000000000000",
+    "claimed": false,
+    "claimable": "0"
+  },
+  "colonies": [
+    {
+      "colonyId": "1",
+      "landLordAddress": "0x6666666666666666666666666666666666666666",
+      "active": true,
+      "createdRound": "0",
+      "availableThisRound": true,
+      "gold": "1240",
+      "resources": {
+        "terraform": "180",
+        "attack": "90",
+        "defense": "130",
+        "mining": "300",
+        "infrastructure": "110"
+      },
+      "settlementState": {
+        "supportCredits": "1",
+        "lastMiningRound": "7",
+        "lastTerraformRound": "7",
+        "eligibleMining": "300",
+        "eligibleInfrastructure": "110"
+      },
+      "stats": {
+        "population": "17",
+        "attackPower": "99",
+        "defensePower": "143",
+        "miningYield": "16",
+        "infrastructureBonusBps": "1050",
+        "miningInfrastructureBonusBps": "1050"
+      },
+      "economy": {
+        "baseMiningYield": "15",
+        "projectedMiningYield": "16",
+        "terraformRequirement": "75",
+        "terraformShortage": "0",
+        "projectedTerraformGoldDrain": "0",
+        "projectedNetGoldChange": "16",
+        "canSupportRound": true
+      },
+      "worldState": {
+        "version": 1,
+        "buildings": []
+      }
+    }
+  ],
+  "roundState": {
+    "roundId": "8",
+    "committed": false,
+    "revealed": false,
+    "planApplied": false,
+    "actionStatus": "NONE",
+    "action": null
+  },
+  "neighbors": [
+    {
+      "playerId": "19",
+      "address": "0x7777777777777777777777777777777777777777",
+      "publicStatePath": "../players/19.json"
+    }
+  ]
+}

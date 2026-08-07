@@ -98,13 +98,15 @@ describe("TournamentManager VRF timeout and retry", function () {
       else if (phase === 3) {
         await ctx.tournament.processTerraformBatch(25);
       } else if (phase === 4) {
-        await ctx.tournament.processTableCompactionBatch(25);
+        await ctx.tournament.processAutomaticExpansionBatch(25);
       } else if (phase === 5) {
-        await ctx.tournament.processTableConsolidationBatch(25);
+        await ctx.tournament.processTableCompactionBatch(25);
       } else if (phase === 6) {
+        await ctx.tournament.processTableConsolidationBatch(25);
+      } else if (phase === 7) {
         await ctx.tournament.processBalanceScanBatch(50);
-      } else if (phase === 7) await ctx.tournament.applyBalanceMove();
-      else if (phase === 8) await ctx.tournament.finalizeRound();
+      } else if (phase === 8) await ctx.tournament.applyBalanceMove();
+      else if (phase === 9) await ctx.tournament.finalizeRound();
     }
   }
 
@@ -125,7 +127,6 @@ describe("TournamentManager VRF timeout and retry", function () {
         mining: 60,
         infrastructure: 60,
       }],
-      claimExpansion: false,
     };
   }
 

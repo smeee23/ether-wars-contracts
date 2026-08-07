@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "chainId": "1",
+  "tournamentAddress": "0x1111111111111111111111111111111111111111",
+  "tournamentId": "42",
+  "snapshot": {
+    "id": "8-23847192",
+    "blockNumber": "23847192",
+    "blockHash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "timestamp": "1785950000"
+  },
+  "status": "ACTIVE",
+  "phase": "COMMIT",
+  "finalizationPhase": "NONE",
+  "currentRound": "8",
+  "lastCompletedRound": "7",
+  "roundTiming": {
+    "commitStartTimestamp": "1785949200",
+    "commitEndTimestamp": "1785963600",
+    "revealStartTimestamp": "1785963600",
+    "revealEndTimestamp": "1785970800"
+  },
+  "entrantCount": "83",
+  "initialPlayerCount": "83",
+  "activePlayerCount": "61",
+  "tableCount": "7",
+  "activeTableCount": "7",
+  "entryDeposit": "10000000000000000",
+  "contracts": {
+    "battleManager": "0x2222222222222222222222222222222222222222",
+    "vrfProvider": "0x3333333333333333333333333333333333333333",
+    "yieldAdapter": "0x4444444444444444444444444444444444444444"
+  },
+  "randomness": {
+    "value": null,
+    "requestId": null,
+    "attempts": "0",
+    "requestedAt": null,
+    "fulfilled": false,
+    "retryEligible": false
+  },
+  "expansionUnlockRound": null,
+  "winnerAddress": null,
+  "yieldAccounting": {
+    "totalPrincipal": "830000000000000000",
+    "outstandingPrincipal": "830000000000000000",
+    "totalPrincipalClaimed": "0",
+    "totalYieldClaimed": "0",
+    "availableYield": "12000000000000000"
+  },
+  "lifecycleBlocks": {
+    "tournamentStart": "23800000",
+    "tournamentEnd": null,
+    "lastRoundFinalized": "23847000"
+  }
+}
