@@ -2,7 +2,6 @@
 pragma solidity 0.8.20;
 
 import {LandLord} from "./LandLord.sol";
-import {IResourceLottery} from "./interfaces/protocol/IResourceLottery.sol";
 import {IYieldAdapter} from "./interfaces/protocol/IYieldAdapter.sol";
 import {GameTypes} from "./libraries/GameTypes.sol";
 import "@openzeppelin/contracts/proxy/Clones.sol";
@@ -44,14 +43,11 @@ contract TournamentManager is ReentrancyGuard {
     uint256 public constant DEFAULT_VRF_REQUEST_TIMEOUT = 1 hours;
     uint256 public constant MAX_TABLE_SIZE = 9;
     uint256 public constant STARTING_GOLD = 1000;
-    uint256 public constant STARTING_TERRAFORM = 0;
     uint256 public constant STARTING_ATTACK = 0;
     uint256 public constant STARTING_DEFENSE = 0;
     uint256 public constant STARTING_MINING = 0;
     uint256 public constant STARTING_INFRASTRUCTURE = 0;
-    uint256 public constant BASIS_POINTS = 10_000;
     uint256 private constant MAX_SUPPORT_BATCH_PLAYERS = 25;
-    uint256 private constant MAX_PENALTY_BATCH_TABLES = 10;
     uint256 private constant MAX_COMPACTION_BATCH_TABLES = 25;
     uint256 private constant MAX_CONSOLIDATION_BATCH_WORK = 25;
     uint256 private constant MAX_BALANCE_SCAN_TABLES = 50;
@@ -67,8 +63,7 @@ contract TournamentManager is ReentrancyGuard {
     enum FinalizationPhase {
         None,
         MiningSettlement,
-        ResourcePenalties,
-        TerraformChecks,
+        PopulationChecks,
         AutomaticExpansions,
         TableCompaction,
         TableConsolidation,
@@ -132,12 +127,10 @@ contract TournamentManager is ReentrancyGuard {
     error UnauthorizedVrfProvider();
     error WrongFinalizationPhase();
     error InvalidBatchSize();
-    error InvalidLotteryResult();
     error InvalidActivePlayerAccounting();
 
     address public immutable admin;
     address public immutable landLordImplementation;
-    IResourceLottery private immutable resourceLottery;
     uint256 public immutable tournamentId;
     uint256 public immutable entryDeposit;
     uint256 public totalPrincipalStETH;
@@ -243,6 +236,14 @@ contract TournamentManager is ReentrancyGuard {
         uint256 indexed colonyId,
         address indexed landLord
     );
+    event PopulationChecked(
+        uint256 indexed roundId,
+        uint256 indexed colonyId,
+        address indexed player,
+        uint256 gold,
+        uint256 population,
+        bool eliminated
+    );
     event TableCreated(uint256 indexed tableId);
     event TableAssigned(address indexed player, uint256 indexed tableId);
     event PlayerMovedTable(
@@ -274,19 +275,16 @@ contract TournamentManager is ReentrancyGuard {
     constructor(
         address _yieldAdapter,
         address _landLordImplementation,
-        address _resourceLottery,
         uint256 _tournamentId,
         uint256 _entryDeposit
     ) {
         require(_yieldAdapter != address(0), "invalid yield adapter");
         require(_landLordImplementation != address(0), "invalid landlord");
-        require(_resourceLottery != address(0), "invalid resource lottery");
         require(_entryDeposit > 0, "invalid entry deposit");
 
         admin = msg.sender;
         yieldAdapter = _yieldAdapter;
         landLordImplementation = _landLordImplementation;
-        resourceLottery = IResourceLottery(_resourceLottery);
         tournamentId = _tournamentId;
         entryDeposit = _entryDeposit;
         state = TournamentState.Registration;
@@ -523,51 +521,24 @@ contract TournamentManager is ReentrancyGuard {
         }
         roundFinalization.playerCursor = end;
         if (end != players.length) return;
-        roundFinalization.phase = FinalizationPhase.ResourcePenalties;
-        roundFinalization.tableCursor = 1;
-    }
-
-    function processPenaltyBatch(uint256 maxTables)
-        external
-        nonReentrant
-        inState(TournamentState.Active)
-    {
-        _requireFinalizationPhase(FinalizationPhase.ResourcePenalties);
-        _requireBatchSize(maxTables, MAX_PENALTY_BATCH_TABLES);
-
-        uint256 start = roundFinalization.tableCursor;
-        uint256 end = start + maxTables;
-        uint256 afterLastTable = tableCount + 1;
-        if (end > afterLastTable) end = afterLastTable;
-
-        uint256 randomness = ITournamentBattleManager(battleManager)
-            .getRoundRandomness(lastStartedRound);
-        for (uint256 tableId = start; tableId < end; tableId++) {
-            _applyWeightedResourcePenaltyForTable(
-                lastStartedRound,
-                tableId,
-                randomness
-            );
-        }
-        roundFinalization.tableCursor = end;
-        if (end != afterLastTable) return;
-        roundFinalization.phase = FinalizationPhase.TerraformChecks;
+        roundFinalization.phase = FinalizationPhase.PopulationChecks;
         roundFinalization.playerCursor = 0;
     }
 
-    function processTerraformBatch(uint256 maxPlayers)
+    function processPopulationBatch(uint256 maxPlayers)
         external
         nonReentrant
         inState(TournamentState.Active)
     {
-        _requireFinalizationPhase(FinalizationPhase.TerraformChecks);
+        _requireFinalizationPhase(FinalizationPhase.PopulationChecks);
         _requireBatchSize(maxPlayers, MAX_SUPPORT_BATCH_PLAYERS);
 
         uint256 start = roundFinalization.playerCursor;
         uint256 end = start + maxPlayers;
         if (end > players.length) end = players.length;
+
         for (uint256 i = start; i < end; i++) {
-            _applyPlayerTerraformCheck(players[i], lastStartedRound);
+            _applyPlayerPopulationCheck(players[i], lastStartedRound);
         }
         roundFinalization.playerCursor = end;
         if (end != players.length) return;
@@ -898,7 +869,7 @@ contract TournamentManager is ReentrancyGuard {
             if (!colony.active) continue;
             if (!_isColonyAvailableForRound(activeColonyId, roundId)) continue;
 
-            LandLord(colony.landLord).applyBuildAction();
+            LandLord(colony.landLord).applyBuildAction(roundId);
             emit BuildActionApplied(player, activeColonyId, colony.landLord);
         }
     }
@@ -924,8 +895,7 @@ contract TournamentManager is ReentrancyGuard {
                 }
             }
 
-            uint256 committedGold = allocation.terraform +
-                allocation.attack +
+            uint256 committedGold = allocation.attack +
                 allocation.defense +
                 allocation.mining +
                 allocation.infrastructure;
@@ -960,7 +930,6 @@ contract TournamentManager is ReentrancyGuard {
         GameTypes.ColonyAllocation calldata allocation
     ) internal {
         LandLord(colonyInfo[allocation.colonyId].landLord).allocateResources(
-            allocation.terraform,
             allocation.attack,
             allocation.defense,
             allocation.mining,
@@ -989,7 +958,8 @@ contract TournamentManager is ReentrancyGuard {
         bool loserEliminated = false;
         if (
             colonyInfo[loserColonyId].active &&
-            LandLord(colonyInfo[loserColonyId].landLord).isEliminatedByResources()
+            LandLord(colonyInfo[loserColonyId].landLord)
+                .isEliminatedByResourcesForRound(roundId)
         ) {
             _eliminateColony(loserColonyId);
             loserEliminated = true;
@@ -1116,7 +1086,6 @@ contract TournamentManager is ReentrancyGuard {
         address landLordAddress = Clones.clone(landLordImplementation);
         LandLord.Resources memory startingResources = LandLord.Resources({
             gold: uint128(STARTING_GOLD),
-            terraform: uint128(STARTING_TERRAFORM),
             attack: uint128(STARTING_ATTACK),
             defense: uint128(STARTING_DEFENSE),
             mining: uint128(STARTING_MINING),
@@ -1378,69 +1347,28 @@ contract TournamentManager is ReentrancyGuard {
         }
     }
 
-    function _applyPlayerTerraformCheck(address player, uint256 roundId) internal {
+    function _applyPlayerPopulationCheck(address player, uint256 roundId) internal {
         if (!playerInfo[player].active) return;
         uint256[] memory colonies = playerColonies[player];
         for (uint256 i = 0; i < colonies.length; i++) {
             uint256 colonyId = colonies[i];
             ColonyInfo memory colony = colonyInfo[colonyId];
             if (!colony.active || !_isColonyAvailableForRound(colonyId, roundId)) continue;
-            (, bool eliminated) = LandLord(colony.landLord)
-                .applyTerraformMaintenance(player, roundId);
+
+            LandLord landLord = LandLord(colony.landLord);
+            uint256 gold = landLord.getGold();
+            uint256 population = landLord.populationForRound(roundId);
+            bool eliminated = gold <= population;
+            emit PopulationChecked(
+                roundId,
+                colonyId,
+                player,
+                gold,
+                population,
+                eliminated
+            );
             if (eliminated && colonyInfo[colonyId].active) _eliminateColony(colonyId);
         }
-    }
-
-    function _applyWeightedResourcePenaltyForTable(
-        uint256 roundId,
-        uint256 tableId,
-        uint256 randomness
-    ) internal {
-        (uint256 resource, uint256 colonyId, uint256 penaltyAmount) =
-            resourceLottery.calculatePenalty(
-                address(this),
-                roundId,
-                tableId,
-                randomness
-            );
-        if (colonyId == 0) return;
-
-        ColonyInfo memory colony = colonyInfo[colonyId];
-        PlayerInfo memory owner = playerInfo[colony.owner];
-        if (
-            resource != uint256(LandLord.ResourceType.Terraform) ||
-            !colony.active ||
-            colony.landLord == address(0) ||
-            colony.createdRound >= roundId ||
-            !owner.active ||
-            owner.tableId != tableId
-        ) revert InvalidLotteryResult();
-
-        LandLord.Resources memory balances =
-            LandLord(colony.landLord).getResources();
-        uint256 resourceBalance = _resourceBalance(
-            balances,
-            LandLord.ResourceType(resource)
-        );
-        if (
-            penaltyAmount >
-            (resourceBalance * 2_000 + BASIS_POINTS - 1) / BASIS_POINTS
-        ) revert InvalidLotteryResult();
-
-        LandLord(colony.landLord).applyResourcePenalty(
-            roundId,
-            colonyId,
-            LandLord.ResourceType(resource),
-            penaltyAmount
-        );
-    }
-
-    function _resourceBalance(
-        LandLord.Resources memory balances,
-        LandLord.ResourceType resource
-    ) internal pure returns (uint256) {
-        require(resource == LandLord.ResourceType.Terraform, "terraform only");
-        return balances.terraform;
     }
 
     function _compactTable(uint256 tableId) internal {

@@ -4,7 +4,7 @@ Smart contracts for an onchain tournament strategy game. Players enter a tournam
 
 ## Project Overview
 
-The current architecture is tournament-based, not a persistent world or insurance protocol. ETH principal and yield/profit are handled at the tournament layer through a generic yield adapter. Gameplay state is virtual: gold plus Terraform, Attack, Defense, Mining, and Infrastructure allocations are tracked in contracts and are not ERC20/aToken balances.
+The current architecture is tournament-based, not a persistent world or insurance protocol. ETH principal and yield/profit are handled at the tournament layer through a generic yield adapter. Gameplay state is virtual: gold plus Attack, Defense, Mining, and Infrastructure allocations are tracked in contracts and are not ERC20/aToken balances.
 
 ## Current Architecture
 
@@ -38,7 +38,7 @@ WorldGraph
 
 - `contracts/LandLord.sol`
   - Per-colony virtual resource state.
-  - Tracks gold, the five permanent allocations, derived population pressure, Terraform-only BUILD support credits, Mining eligibility, and gold transfers.
+  - Tracks gold, four permanent allocations, derived population, Mining eligibility, and gold transfers.
   - Does not track buildings or tiles; those are front-end abstractions.
   - Does not hold ETH, aTokens, or yield assets.
 
@@ -72,17 +72,17 @@ Actions:
 
 - `ATTACK`: targets an active player at the same frozen round table, selects the attacker's source colony and defender's target colony, and includes a positive gold wager.
 - `DEFEND`: default action if a player does not reveal; no wager.
-- `BUILD`: no wager; an uncontested BUILD stores one support stabilization credit on every active colony.
+- `BUILD`: no wager; a successful uncontested BUILD reduces each active eligible colony's effective population-growth round by one.
 
 Attacks are resolved as connected conflict groups within a frozen round table. The largest attack wager in the group becomes the group stake. ATTACK uses only the source colony's Attack allocation; DEFEND and attacked BUILD use only the targeted colony's Defense allocation. Infrastructure improves both through a capped piecewise-linear multiplier. Attacking a BUILD action adds 50 score, while an attacked DEFEND action adds 25 score.
 
 ## Resource Model
 
-Gold is the main tournament survival currency and the only attack wager. Gold spent 1:1 into Terraform, Attack, Defense, Mining, or Infrastructure is permanently removed from the free balance. Allocations persist indefinitely.
+Gold is the main tournament survival currency and the only attack wager. Gold spent 1:1 into Attack, Defense, Mining, or Infrastructure is permanently removed from the free balance. Allocations persist indefinitely.
 
-Terraform consolidates the former food, water, oxygen, and shelter requirements. Population remains `10 + round`; an uncontested BUILD stores a credit that reduces only Terraform pressure and exempts its player from that round's lottery. Each table's weighted lottery removes 5%-20% Terraform from one colony. A Terraform shortage then drains a severity-scaled 15%-30% of free gold, reduced by Infrastructure, and a colony is eliminated if the drain reaches zero gold.
+Population is `10 + max(round - successful BUILD count, 0) * 50`. After Mining settlement, population solvency is checked across all players in bounded batches. A colony is eliminated when its gold is less than or equal to its population.
 
-Mining produces 5% virtual gold per completed round, rounded down and calculated per colony. New Mining and its Infrastructure boost become yield-eligible in the following round. Infrastructure uses diminishing piecewise-linear returns, capped at 50% for military and Terraform effects and 30% for Mining.
+Mining produces 5% virtual gold per completed round, rounded down and calculated per colony. New Mining and its Infrastructure boost become yield-eligible in the following round. Infrastructure uses diminishing piecewise-linear returns, capped at 50% for military effects and 30% for Mining.
 
 Expansion automatically creates additional internal colonies for every active tournament player during batched round finalization. The first expansion is granted after round 1; the second is granted in a later round after active players fall to half the initial field. New colonies activate the following round. Colonies do not receive separate table seats, cannot attack independently, and do not change neighbor assignment. A player remains active while at least one owned colony remains active.
 

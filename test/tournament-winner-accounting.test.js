@@ -18,7 +18,6 @@ describe("TournamentManager winner and principal accounting", function () {
     const StETH = await ethers.getContractFactory("StETHMock");
     const StETHYieldAdapter = await ethers.getContractFactory("StETHYieldAdapter");
     const LandLord = await ethers.getContractFactory("LandLord");
-    const ResourceLottery = await ethers.getContractFactory("ResourceLottery");
     const TournamentManager = await ethers.getContractFactory("TournamentManager");
     const BattleManager = await ethers.getContractFactory("BattleManager");
 
@@ -31,12 +30,9 @@ describe("TournamentManager winner and principal accounting", function () {
     await adapter.deployed();
     const implementation = await LandLord.deploy();
     await implementation.deployed();
-    const resourceLottery = await ResourceLottery.deploy();
-    await resourceLottery.deployed();
     const tournament = await TournamentManager.deploy(
       adapter.address,
       implementation.address,
-      resourceLottery.address,
       1,
       entryDeposit
     );

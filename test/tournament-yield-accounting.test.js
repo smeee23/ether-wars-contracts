@@ -9,7 +9,6 @@ describe("TournamentManager stETH principal accounting", function () {
     const StETH = await ethers.getContractFactory("StETHMock");
     const Adapter = await ethers.getContractFactory("StETHYieldAdapter");
     const LandLord = await ethers.getContractFactory("LandLord");
-    const ResourceLottery = await ethers.getContractFactory("ResourceLottery");
     const Tournament = await ethers.getContractFactory("TournamentManager");
 
     const stETH = await StETH.deploy();
@@ -18,11 +17,9 @@ describe("TournamentManager stETH principal accounting", function () {
       ethers.constants.AddressZero
     );
     const implementation = await LandLord.deploy();
-    const resourceLottery = await ResourceLottery.deploy();
     const tournament = await Tournament.deploy(
       adapter.address,
       implementation.address,
-      resourceLottery.address,
       1,
       entryDeposit
     );

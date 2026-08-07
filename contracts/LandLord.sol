@@ -10,7 +10,6 @@ import "@openzeppelin/contracts/proxy/utils/Initializable.sol";
  */
 contract LandLord is Initializable {
     enum ResourceType {
-        Terraform,
         Attack,
         Defense,
         Mining,
@@ -19,7 +18,6 @@ contract LandLord is Initializable {
 
     struct Resources {
         uint128 gold;
-        uint128 terraform;
         uint128 attack;
         uint128 defense;
         uint128 mining;
@@ -33,14 +31,10 @@ contract LandLord is Initializable {
         uint256 miningYield;
     }
 
-    uint256 public constant RESOURCE_UPKEEP = 15;
     uint256 public constant POPULATION_BASE = 10;
-    uint256 public constant POPULATION_GROWTH_PER_ROUND = 1;
-    uint256 public constant POPULATION_UPKEEP_INTERVAL = 3;
+    uint256 public constant POPULATION_GROWTH_PER_ROUND = 50;
     uint256 public constant GOLD_ALLOCATION_RATE = 1;
     uint256 public constant BASIS_POINTS = 10_000;
-    uint256 public constant MIN_TERRAFORM_DRAIN_BPS = 1_500;
-    uint256 public constant MAX_TERRAFORM_DRAIN_BPS = 3_000;
     uint256 public constant MINING_YIELD_BPS = 500;
 
     // Piecewise-linear Infrastructure curve: 10 bps/unit through 100,
@@ -55,11 +49,11 @@ contract LandLord is Initializable {
 
     address public lord;
     address public controller;
-    uint64 public supportCredits;
     uint64 public lastMiningRound;
-    uint64 public lastTerraformRound;
     uint128 public eligibleMining;
     uint128 public eligibleInfrastructure;
+    uint64 public successfulBuildCount;
+    uint64 public lastSuccessfulBuildRound;
 
     Resources private resources;
 
@@ -67,36 +61,19 @@ contract LandLord is Initializable {
     error AllocationOverflow();
     error RoundAlreadySettled(uint256 roundId);
     error InvalidRoundOrder(uint256 expected, uint256 actual);
+    error BuildAlreadyApplied(uint256 roundId);
 
     event Initialized(address indexed lord, address indexed controller);
     event GoldSpent(uint256 amount);
     event GoldAwarded(uint256 amount);
     event GoldTransferred(address indexed toLandLord, uint256 amount);
     event ResourceAllocated(ResourceType indexed resource, uint256 goldSpent, uint256 amountAdded);
-    event ResourcePenaltyApplied(
-        uint256 indexed round,
-        address indexed player,
-        uint256 indexed colonyId,
-        ResourceType resource,
-        uint256 requested,
-        uint256 applied
-    );
-    event BuildSupportCreditStored(uint256 supportCredits);
+    event SuccessfulBuildApplied(uint256 indexed round, uint256 successfulBuildCount);
     event MiningYieldCredited(
         uint256 indexed round,
         uint256 eligibleMining,
         uint256 infrastructureBonusBps,
         uint256 goldCredited
-    );
-    event TerraformMaintenanceApplied(
-        uint256 indexed round,
-        uint256 population,
-        uint256 required,
-        uint256 available,
-        uint256 shortageBps,
-        uint256 infrastructureReductionBps,
-        uint256 goldDrained,
-        bool eliminated
     );
 
     modifier onlyController() {
@@ -116,32 +93,24 @@ contract LandLord is Initializable {
         controller = _controller;
         resources = startingResources;
         lastMiningRound = _toUint64(createdRound);
-        lastTerraformRound = _toUint64(createdRound);
         eligibleMining = startingResources.mining;
         eligibleInfrastructure = startingResources.infrastructure;
         emit Initialized(_lord, _controller);
     }
 
     function allocateResources(
-        uint256 terraform,
         uint256 attack,
         uint256 defense,
         uint256 mining,
         uint256 infrastructure
     ) external onlyController {
-        uint256 totalGold = terraform + attack + defense + mining + infrastructure;
+        uint256 totalGold = attack + defense + mining + infrastructure;
         if (totalGold == 0) return;
         _spendGold(totalGold);
-        _addAllocatedResource(ResourceType.Terraform, terraform);
         _addAllocatedResource(ResourceType.Attack, attack);
         _addAllocatedResource(ResourceType.Defense, defense);
         _addAllocatedResource(ResourceType.Mining, mining);
         _addAllocatedResource(ResourceType.Infrastructure, infrastructure);
-    }
-
-    function applyBuildAction() external onlyController {
-        supportCredits += 1;
-        emit BuildSupportCreditStored(supportCredits);
     }
 
     function settleMining(uint256 roundId)
@@ -166,44 +135,11 @@ contract LandLord is Initializable {
         eligibleInfrastructure = resources.infrastructure;
     }
 
-    function applyTerraformMaintenance(address player, uint256 roundId)
-        external
-        onlyController
-        returns (uint256 drained, bool eliminated)
-    {
-        require(player == lord, "wrong player");
-        _requireNextRound(lastTerraformRound, roundId);
-        lastTerraformRound = _toUint64(roundId);
-
-        uint256 required = terraformRequirement(roundId);
-        uint256 available = resources.terraform;
-        uint256 shortageBps;
-        uint256 reductionBps = infrastructureBonusBps(resources.infrastructure);
-
-        if (available < required) {
-            shortageBps = (required - available) * BASIS_POINTS / required;
-            uint256 drainBps = MIN_TERRAFORM_DRAIN_BPS +
-                shortageBps * (MAX_TERRAFORM_DRAIN_BPS - MIN_TERRAFORM_DRAIN_BPS) /
-                BASIS_POINTS;
-            if (reductionBps > MAX_INFRA_BONUS_BPS) reductionBps = MAX_INFRA_BONUS_BPS;
-            drainBps = drainBps * (BASIS_POINTS - reductionBps) / BASIS_POINTS;
-            drained = _ceilDiv(uint256(resources.gold) * drainBps, BASIS_POINTS);
-            if (drained > resources.gold) drained = resources.gold;
-            resources.gold -= uint128(drained);
-            if (drained > 0) emit GoldSpent(drained);
-        }
-
-        eliminated = resources.gold == 0;
-        emit TerraformMaintenanceApplied(
-            roundId,
-            populationForRound(effectiveRoundForSupport(roundId)),
-            required,
-            available,
-            shortageBps,
-            reductionBps,
-            drained,
-            eliminated
-        );
+    function applyBuildAction(uint256 roundId) external onlyController {
+        if (roundId <= lastSuccessfulBuildRound) revert BuildAlreadyApplied(roundId);
+        lastSuccessfulBuildRound = _toUint64(roundId);
+        successfulBuildCount += 1;
+        emit SuccessfulBuildApplied(roundId, successfulBuildCount);
     }
 
     function spendGold(uint256 amount) external onlyController {
@@ -212,20 +148,6 @@ contract LandLord is Initializable {
 
     function awardGold(uint256 amount) external onlyController {
         _awardGold(amount);
-    }
-
-    function applyResourcePenalty(
-        uint256 roundId,
-        uint256 colonyId,
-        ResourceType resource,
-        uint256 amount
-    ) external onlyController returns (uint256 applied) {
-        require(resource == ResourceType.Terraform, "terraform only");
-        applied = amount > resources.terraform ? resources.terraform : amount;
-        resources.terraform -= uint128(applied);
-        if (applied > 0) {
-            emit ResourcePenaltyApplied(roundId, lord, colonyId, resource, amount, applied);
-        }
     }
 
     function transferGoldTo(address toLandLord, uint256 amount)
@@ -241,32 +163,20 @@ contract LandLord is Initializable {
 
     function getGold() external view returns (uint256) { return resources.gold; }
     function getResources() external view returns (Resources memory) { return resources; }
-    function getPopulationEstimate() external pure returns (uint256) { return populationForRound(0); }
-    function getPopulationEstimate(uint256 roundId) public pure returns (uint256) { return populationForRound(roundId); }
-    function populationForRound(uint256 roundId) public pure returns (uint256) {
-        return POPULATION_BASE + roundId * POPULATION_GROWTH_PER_ROUND;
+    function populationForRound(uint256 roundId) public view returns (uint256) {
+        uint256 effectiveRound = roundId > successfulBuildCount
+            ? roundId - successfulBuildCount
+            : 0;
+        return POPULATION_BASE + effectiveRound * POPULATION_GROWTH_PER_ROUND;
     }
 
-    function effectiveRoundForSupport(uint256 roundId) public view returns (uint256) {
-        return supportCredits >= roundId ? 0 : roundId - supportCredits;
-    }
-
-    function terraformRequirement(uint256 roundId) public view returns (uint256) {
-        uint256 pressure = 3 + effectiveRoundForSupport(roundId) / POPULATION_UPKEEP_INTERVAL;
-        return RESOURCE_UPKEEP * pressure;
-    }
-
-    function isEliminatedByResources() public view returns (bool) { return resources.gold == 0; }
-    function canSupportRound(uint256 roundId) public view returns (bool) {
-        return resources.gold > 0 && resources.terraform >= terraformRequirement(roundId);
-    }
-    function isEliminatedByResourcesForRound(uint256) public view returns (bool) {
-        return resources.gold == 0;
+    function isEliminatedByResourcesForRound(uint256 roundId) public view returns (bool) {
+        return resources.gold <= populationForRound(roundId);
     }
 
     function getResourceStats(uint256 roundId) public view returns (ResourceStats memory) {
         return ResourceStats({
-            population: populationForRound(effectiveRoundForSupport(roundId)),
+            population: populationForRound(roundId),
             attackPower: effectiveAttack(),
             defensePower: effectiveDefense(),
             miningYield: previewMiningYield()
@@ -325,8 +235,7 @@ contract LandLord is Initializable {
         if (goldAmount == 0) return;
         uint256 allocated = goldAmount * GOLD_ALLOCATION_RATE;
         if (allocated > type(uint128).max) revert AllocationOverflow();
-        if (resource == ResourceType.Terraform) resources.terraform = _add128(resources.terraform, allocated);
-        else if (resource == ResourceType.Attack) resources.attack = _add128(resources.attack, allocated);
+        if (resource == ResourceType.Attack) resources.attack = _add128(resources.attack, allocated);
         else if (resource == ResourceType.Defense) resources.defense = _add128(resources.defense, allocated);
         else if (resource == ResourceType.Mining) resources.mining = _add128(resources.mining, allocated);
         else resources.infrastructure = _add128(resources.infrastructure, allocated);
@@ -350,7 +259,4 @@ contract LandLord is Initializable {
         return uint64(value);
     }
 
-    function _ceilDiv(uint256 numerator, uint256 denominator) internal pure returns (uint256) {
-        return numerator == 0 ? 0 : (numerator - 1) / denominator + 1;
-    }
 }

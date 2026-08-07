@@ -18,7 +18,6 @@ library GameTypes {
 
     struct ColonyAllocation {
         uint256 colonyId;
-        uint256 terraform;
         uint256 attack;
         uint256 defense;
         uint256 mining;

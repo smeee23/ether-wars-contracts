@@ -65,15 +65,16 @@ mainnet stETH by default, and supports `STETH_ADDRESS` and
 
 ## Virtual resource settlement
 
-Gold allocations into Terraform, Attack, Defense, Mining, and Infrastructure
+Gold allocations into Attack, Defense, Mining, and Infrastructure
 are permanent and are applied from the committed round plan before battle
 scoring. Attack is offensive-only; Defense is used by DEFEND and attacked BUILD
-actions. An uncontested BUILD stores a support credit that reduces only future
-Terraform pressure.
+actions. A successful uncontested BUILD reduces each active eligible colony's
+effective population-growth round by one. Population is `10 + max(round - successful
+BUILD count, 0) * 50`, and a colony is eliminated when its gold is less than or
+equal to that population threshold.
 
 After every table resolves, finalization runs in bounded phases: Mining yield,
-one weighted Terraform penalty per table, Terraform maintenance and insolvency,
-then table compaction and balancing. Mining and its Infrastructure multiplier
-become eligible one round after purchase. Terraform shortage drains 15%-30% of
-free gold according to shortage severity, with Infrastructure reducing the
-drain. A colony is eliminated when its free gold reaches zero.
+population solvency checks, automatic expansion, then table compaction and
+balancing. Both Mining and population checks process the tournament player list
+in bounded batches. Mining and its Infrastructure multiplier become eligible
+one round after purchase.

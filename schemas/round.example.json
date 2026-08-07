@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "chainId": "1",
+  "tournamentAddress": "0x1111111111111111111111111111111111111111",
+  "tournamentId": "42",
+  "snapshot": {
+    "id": "8-23847192",
+    "blockNumber": "23847192",
+    "blockHash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "timestamp": "1785950000"
+  },
+  "roundNumber": "8",
+  "startingActivePlayerCount": "63",
+  "endingActivePlayerCount": "61",
+  "eliminatedPlayerCount": "2",
+  "startingTableCount": "8",
+  "playersEliminated": [
+        {
+          "playerId": "19",
+          "address": "0x7777777777777777777777777777777777777777",
+          "tableId": "3"
+        },
+        {
+          "playerId": "2",
+          "address": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "tableId": "4"
+        }
+  ],
+  "commitStartTimestamp": "1785949200",
+  "commitEndTimestamp": "1785963600",
+  "revealStartTimestamp": "1785963600",
+  "revealEndTimestamp": "1785970800",
+  "status": "FINALIZED",
+  "finalizedTimestamp": "1785971100",
+  "finalizedBlockNumber": "23847192",
+  "internal-completion": 
+    {
+        "revealsClosed": true,
+        "battlesResolved": true,
+        "resourceSettlementCompleted": true,
+        "populationChecksCompleted": true,
+        "expansionCompleted": true,
+        "nextRoundInitialized": true,
+        "tablesResolved": "7",
+        "tablesRequiringResolution": "7"
+    }
+}

@@ -1,7 +1,7 @@
 const { expect } = require("chai");
 const { ethers } = require("hardhat");
 
-describe("LandLord five-resource model", function () {
+describe("LandLord four-resource model", function () {
   async function deployLandLord(overrides = {}, createdRound = 0) {
     const [lord, controller, outsider] = await ethers.getSigners();
     const LandLord = await ethers.getContractFactory("LandLord");
@@ -9,7 +9,6 @@ describe("LandLord five-resource model", function () {
     await landLord.deployed();
     const starting = {
       gold: overrides.gold ?? 1000,
-      terraform: overrides.terraform ?? 0,
       attack: overrides.attack ?? 0,
       defense: overrides.defense ?? 0,
       mining: overrides.mining ?? 0,
@@ -28,14 +27,13 @@ describe("LandLord five-resource model", function () {
     }
   }
 
-  it("stores gold and the five approved allocations", async function () {
+  it("stores gold and the four approved allocations", async function () {
     const { landLord } = await deployLandLord({
-      gold: 100, terraform: 90, attack: 80, defense: 70, mining: 60,
+      gold: 100, attack: 80, defense: 70, mining: 60,
       infrastructure: 50,
     });
     const r = await landLord.getResources();
     expect(r.gold.toString()).to.equal("100");
-    expect(r.terraform.toString()).to.equal("90");
     expect(r.attack.toString()).to.equal("80");
     expect(r.defense.toString()).to.equal("70");
     expect(r.mining.toString()).to.equal("60");
@@ -46,24 +44,23 @@ describe("LandLord five-resource model", function () {
 
   it("permanently spends gold 1:1 across all categories", async function () {
     const { landLord, controller } = await deployLandLord({ gold: 100 });
-    await landLord.connect(controller).allocateResources(10, 20, 15, 25, 30);
+    await landLord.connect(controller).allocateResources(20, 15, 25, 40);
     const r = await landLord.getResources();
     expect(r.gold.toString()).to.equal("0");
-    expect(r.terraform.toString()).to.equal("10");
     expect(r.attack.toString()).to.equal("20");
     expect(r.defense.toString()).to.equal("15");
     expect(r.mining.toString()).to.equal("25");
-    expect(r.infrastructure.toString()).to.equal("30");
+    expect(r.infrastructure.toString()).to.equal("40");
   });
 
   it("rejects over-allocation atomically and rejects non-controller calls", async function () {
     const { landLord, controller, outsider } = await deployLandLord({ gold: 99 });
     await expectRevert(
-      landLord.connect(controller).allocateResources(10, 20, 15, 25, 30),
+      landLord.connect(controller).allocateResources(20, 15, 25, 40),
       "InsufficientGold"
     );
     await expectRevert(
-      landLord.connect(outsider).allocateResources(1, 0, 0, 0, 0),
+      landLord.connect(outsider).allocateResources(1, 0, 0, 0),
       "not controller"
     );
     expect((await landLord.getGold()).toString()).to.equal("99");
@@ -81,7 +78,7 @@ describe("LandLord five-resource model", function () {
 
   it("delays new Mining and its Infrastructure boost until the next round", async function () {
     const { landLord, controller } = await deployLandLord({ gold: 300 });
-    await landLord.connect(controller).allocateResources(0, 0, 0, 200, 100);
+    await landLord.connect(controller).allocateResources(0, 0, 200, 100);
     expect((await landLord.previewMiningYield()).toString()).to.equal("0");
     expect((await landLord.connect(controller).callStatic.settleMining(1)).toString())
       .to.equal("0");
@@ -100,39 +97,24 @@ describe("LandLord five-resource model", function () {
     await expectRevert(landLord.connect(controller).settleMining(1), "RoundAlreadySettled");
   });
 
-  it("retains 10 + round population and BUILD credits only reduce Terraform pressure", async function () {
-    const { landLord, controller } = await deployLandLord({ terraform: 100 });
-    expect((await landLord.populationForRound(5)).toString()).to.equal("15");
-    expect((await landLord.terraformRequirement(10)).toString()).to.equal("90");
-    await landLord.connect(controller).applyBuildAction();
-    await landLord.connect(controller).applyBuildAction();
-    expect((await landLord.terraformRequirement(10)).toString()).to.equal("75");
-    expect((await landLord.getResources()).terraform.toString()).to.equal("100");
+  it("reduces population growth by one round for each successful BUILD", async function () {
+    const { landLord, controller } = await deployLandLord();
+    expect((await landLord.populationForRound(5)).toString()).to.equal("260");
+    await landLord.connect(controller).applyBuildAction(1);
+    await landLord.connect(controller).applyBuildAction(3);
+    expect((await landLord.populationForRound(5)).toString()).to.equal("160");
+    expect((await landLord.getResourceStats(10)).population.toString()).to.equal("410");
+    await expectRevert(
+      landLord.connect(controller).applyBuildAction(3),
+      "BuildAlreadyApplied"
+    );
   });
 
-  it("scales Terraform gold drain with shortage severity and reduces it with Infrastructure", async function () {
-    const mild = await deployLandLord({ gold: 1000, terraform: 44 });
-    const severe = await deployLandLord({ gold: 1000, terraform: 0 });
-    const protectedColony = await deployLandLord({
-      gold: 1000, terraform: 0, infrastructure: 1500,
-    });
-    const mildResult = await mild.landLord.connect(mild.controller)
-      .callStatic.applyTerraformMaintenance(mild.lord.address, 1);
-    const severeResult = await severe.landLord.connect(severe.controller)
-      .callStatic.applyTerraformMaintenance(severe.lord.address, 1);
-    const protectedResult = await protectedColony.landLord.connect(protectedColony.controller)
-      .callStatic.applyTerraformMaintenance(protectedColony.lord.address, 1);
-    expect(severeResult.drained.gt(mildResult.drained)).to.equal(true);
-    expect(protectedResult.drained.lt(severeResult.drained)).to.equal(true);
+  it("eliminates when gold equals the round population threshold", async function () {
+    const atThreshold = await deployLandLord({ gold: 260 });
+    const aboveThreshold = await deployLandLord({ gold: 261 });
+    expect(await atThreshold.landLord.isEliminatedByResourcesForRound(5)).to.equal(true);
+    expect(await aboveThreshold.landLord.isEliminatedByResourcesForRound(5)).to.equal(false);
   });
 
-  it("eliminates when Terraform maintenance drains the last free gold", async function () {
-    const { landLord, lord, controller } = await deployLandLord({ gold: 1 });
-    const result = await landLord.connect(controller)
-      .callStatic.applyTerraformMaintenance(lord.address, 1);
-    expect(result.drained.toString()).to.equal("1");
-    expect(result.eliminated).to.equal(true);
-    await landLord.connect(controller).applyTerraformMaintenance(lord.address, 1);
-    expect(await landLord.isEliminatedByResources()).to.equal(true);
-  });
 });

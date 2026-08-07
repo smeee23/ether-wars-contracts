@@ -49,9 +49,8 @@
     "resources": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["terraform", "attack", "defense", "mining", "infrastructure"],
+      "required": ["attack", "defense", "mining", "infrastructure"],
       "properties": {
-        "terraform": { "$ref": "definitions.schema.json#/definitions/uintString" },
         "attack": { "$ref": "definitions.schema.json#/definitions/uintString" },
         "defense": { "$ref": "definitions.schema.json#/definitions/uintString" },
         "mining": { "$ref": "definitions.schema.json#/definitions/uintString" },
@@ -76,13 +75,13 @@
         "settlementState": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["supportCredits", "lastMiningRound", "lastTerraformRound", "eligibleMining", "eligibleInfrastructure"],
+          "required": ["lastMiningRound", "eligibleMining", "eligibleInfrastructure", "successfulBuildCount", "lastSuccessfulBuildRound"],
           "properties": {
-            "supportCredits": { "$ref": "definitions.schema.json#/definitions/uintString" },
             "lastMiningRound": { "$ref": "definitions.schema.json#/definitions/uintString" },
-            "lastTerraformRound": { "$ref": "definitions.schema.json#/definitions/uintString" },
             "eligibleMining": { "$ref": "definitions.schema.json#/definitions/uintString" },
-            "eligibleInfrastructure": { "$ref": "definitions.schema.json#/definitions/uintString" }
+            "eligibleInfrastructure": { "$ref": "definitions.schema.json#/definitions/uintString" },
+            "successfulBuildCount": { "$ref": "definitions.schema.json#/definitions/uintString" },
+            "lastSuccessfulBuildRound": { "$ref": "definitions.schema.json#/definitions/uintString" }
           }
         },
         "stats": {
@@ -101,18 +100,14 @@
         "economy": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["baseMiningYield", "projectedMiningYield", "terraformRequirement", "terraformShortage", "projectedTerraformGoldDrain", "projectedNetGoldChange", "canSupportRound"],
+          "required": ["baseMiningYield", "projectedMiningYield", "projectedNetGoldChange"],
           "properties": {
             "baseMiningYield": { "$ref": "definitions.schema.json#/definitions/uintString" },
             "projectedMiningYield": { "$ref": "definitions.schema.json#/definitions/uintString" },
-            "terraformRequirement": { "$ref": "definitions.schema.json#/definitions/uintString" },
-            "terraformShortage": { "$ref": "definitions.schema.json#/definitions/uintString" },
-            "projectedTerraformGoldDrain": { "$ref": "definitions.schema.json#/definitions/uintString" },
             "projectedNetGoldChange": {
               "type": "string",
               "pattern": "^-?(0|[1-9][0-9]*)$"
-            },
-            "canSupportRound": { "type": "boolean" }
+            }
           }
         },
         "worldState": {

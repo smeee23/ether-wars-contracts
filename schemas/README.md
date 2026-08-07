@@ -17,6 +17,6 @@ stable onchain seat. Neighbor relationships contain all other active players at 
 table and have no canonical direction.
 
 `worldState` is explicitly UI-owned. Its buildings are not contract state. The canonical
-resource model is Gold plus Terraform, Attack, Defense, Mining, and Infrastructure.
+resource model is Gold plus Attack, Defense, Mining, and Infrastructure.
 Projected economy fields should be recalculated at the snapshot block and must not be
 treated as already-settled transfers.

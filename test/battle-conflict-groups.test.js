@@ -12,19 +12,6 @@ const ARMY_BONUS_BPS_STEP = 500;
 const MAX_ARMY_BONUS = 20;
 const COMMIT_DURATION = 4 * 60 * 60;
 const REVEAL_DURATION = 2 * 60 * 60;
-const PENALTY_RATIO_SMOOTHING_BPS = 500;
-const PENALTY_WEIGHT_NUMERATOR = 100000000;
-const PENALTY_DOMAIN = ethers.BigNumber.from(
-  ethers.utils.keccak256(ethers.utils.toUtf8Bytes("weighted-resource-penalty"))
-);
-const PENALTY_SELECTION_DOMAIN = ethers.BigNumber.from(
-  ethers.utils.keccak256(
-    ethers.utils.toUtf8Bytes("weighted-resource-penalty-selection")
-  )
-);
-const PENALTY_SIZE_DOMAIN = ethers.BigNumber.from(
-  ethers.utils.keccak256(ethers.utils.toUtf8Bytes("weighted-resource-penalty-size"))
-);
 
 describe("BattleManager connected conflict groups", function () {
   async function deployGame(playerCount) {
@@ -35,7 +22,6 @@ describe("BattleManager connected conflict groups", function () {
     const StETH = await ethers.getContractFactory("StETHMock");
     const StETHYieldAdapter = await ethers.getContractFactory("StETHYieldAdapter");
     const LandLord = await ethers.getContractFactory("LandLord");
-    const ResourceLottery = await ethers.getContractFactory("ResourceLottery");
     const TournamentManager = await ethers.getContractFactory("TournamentManager");
     const BattleManager = await ethers.getContractFactory("BattleManager");
     const VRFProviderMock = await ethers.getContractFactory("VRFProviderMock");
@@ -50,13 +36,9 @@ describe("BattleManager connected conflict groups", function () {
 
     const landLordImplementation = await LandLord.deploy();
     await landLordImplementation.deployed();
-    const resourceLottery = await ResourceLottery.deploy();
-    await resourceLottery.deployed();
-
     const tournament = await TournamentManager.deploy(
       yieldAdapter.address,
       landLordImplementation.address,
-      resourceLottery.address,
       1,
       ethers.utils.parseEther("1")
     );
@@ -117,10 +99,9 @@ describe("BattleManager connected conflict groups", function () {
       },
       allocations: (ctx.queuedAllocations.get(player.address) || []).map((allocation) => ({
         colonyId: allocation.colonyId,
-        terraform: allocation.terraform ?? allocation.food ?? 0,
         attack: allocation.attack ?? allocation.army ?? 0,
         defense: allocation.defense ?? allocation.army ?? allocation.oxygen ?? 0,
-        mining: allocation.mining ?? 0,
+        mining: allocation.mining ?? allocation.food ?? 0,
         infrastructure: allocation.infrastructure ??
           ((allocation.shelter ?? 0) + (allocation.water ?? 0)),
       })),
@@ -184,26 +165,24 @@ describe("BattleManager connected conflict groups", function () {
       if (phase === 1) {
         await ctx.tournament.processMiningBatch(Math.min(batchSize, 25));
       } else if (phase === 2) {
-        await ctx.tournament.processPenaltyBatch(Math.min(batchSize, 10));
+        await ctx.tournament.processPopulationBatch(Math.min(batchSize, 25));
       } else if (phase === 3) {
-        await ctx.tournament.processTerraformBatch(Math.min(batchSize, 25));
-      } else if (phase === 4) {
         await ctx.tournament.processAutomaticExpansionBatch(
           Math.min(batchSize, 25)
         );
-      } else if (phase === 5) {
+      } else if (phase === 4) {
         await ctx.tournament.processTableCompactionBatch(
           Math.min(batchSize, 25)
         );
-      } else if (phase === 6) {
+      } else if (phase === 5) {
         await ctx.tournament.processTableConsolidationBatch(
           Math.min(batchSize, 25)
         );
-      } else if (phase === 7) {
+      } else if (phase === 6) {
         await ctx.tournament.processBalanceScanBatch(Math.min(batchSize, 50));
-      } else if (phase === 8) {
+      } else if (phase === 7) {
         await ctx.tournament.applyBalanceMove();
-      } else if (phase === 9) {
+      } else if (phase === 8) {
         await ctx.tournament.finalizeRound();
       }
     }
@@ -295,60 +274,6 @@ describe("BattleManager connected conflict groups", function () {
       .toNumber();
   }
 
-  function penaltyRoll(randomness, roundId, tableId, resource, totalWeight) {
-    return ethers.BigNumber.from(
-      ethers.utils.keccak256(
-        encoded(
-          ["uint256", "uint256", "uint256", "uint256", "uint256"],
-          [randomness, roundId, tableId, resource, PENALTY_DOMAIN]
-        )
-      )
-    )
-      .mod(totalWeight)
-      .toNumber();
-  }
-
-  function penaltyWeight(resourceBalance, totalResources) {
-    const ratioBps = Math.floor(resourceBalance * BASIS_POINTS / totalResources);
-    return Math.floor(
-      PENALTY_WEIGHT_NUMERATOR / (PENALTY_RATIO_SMOOTHING_BPS + ratioBps)
-    );
-  }
-
-  function selectedPenaltyResource(randomness, roundId) {
-    randomness;
-    roundId;
-    return 0;
-  }
-
-  function penaltyAmount(randomness, roundId, tableId, resource, colonyId, balance) {
-    const penaltyBps = ethers.BigNumber.from(
-      ethers.utils.keccak256(
-        encoded(
-          ["uint256", "uint256", "uint256", "uint256", "uint256", "uint256"],
-          [randomness, roundId, tableId, resource, colonyId, PENALTY_SIZE_DOMAIN]
-        )
-      )
-    ).mod(1501).add(500);
-    return ethers.BigNumber.from(balance).mul(penaltyBps).add(9999).div(10000);
-  }
-
-  function weightedPenaltySeed(roundId, tableId, resource, weights, selectedIndex) {
-    const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
-    const lowerBound = weights
-      .slice(0, selectedIndex)
-      .reduce((sum, weight) => sum + weight, 0);
-    const upperBound = lowerBound + weights[selectedIndex];
-    for (let seed = 1; seed < 1000; seed++) {
-      if (selectedPenaltyResource(seed, roundId) !== resource) continue;
-      const roll = penaltyRoll(seed, roundId, tableId, resource, totalWeight);
-      if (roll >= lowerBound && roll < upperBound) {
-        return seed;
-      }
-    }
-    throw new Error("no penalty seed found");
-  }
-
   function armyBonus(resources, defense = false) {
     const infrastructure = resources.infrastructure.toNumber();
     let infraBps = Math.min(infrastructure, 100) * 10;
@@ -420,7 +345,6 @@ describe("BattleManager connected conflict groups", function () {
     for (const colony of colonies) {
       allocations.push({
         colonyId: colony.toNumber(),
-        terraform: 60,
         attack: 60,
         defense: 60,
         mining: 0,
@@ -434,10 +358,9 @@ describe("BattleManager connected conflict groups", function () {
     const allocations = ctx.queuedAllocations.get(player.address) || [];
     allocations.push({
       colonyId,
-      terraform: values.terraform ?? values.food ?? 0,
       attack: values.attack ?? values.army ?? 0,
       defense: values.defense ?? values.army ?? values.oxygen ?? 0,
-      mining: values.mining ?? 0,
+      mining: values.mining ?? values.food ?? 0,
       infrastructure: values.infrastructure ??
         ((values.shelter ?? 0) + (values.water ?? 0)),
     });
@@ -456,10 +379,9 @@ describe("BattleManager connected conflict groups", function () {
     const colonyId = await firstColonyOf(ctx, player);
     ctx.queuedAllocations.set(player.address, [{
       colonyId,
-      terraform: 100,
       attack: 400,
       defense: 100,
-      mining: 0,
+      mining: 100,
       infrastructure: 100,
     }]);
   }
@@ -475,10 +397,9 @@ describe("BattleManager connected conflict groups", function () {
     const colonies = await ctx.tournament.getPlayerColonies(player.address);
     ctx.queuedAllocations.set(player.address, [{
       colonyId: colonies[0].toNumber(),
-      terraform: 990,
       attack: 0,
       defense: 0,
-      mining: 0,
+      mining: 990,
       infrastructure: 0,
     }]);
   }
@@ -806,7 +727,7 @@ describe("BattleManager connected conflict groups", function () {
       const colonyId = await firstColonyOf(ctx, player);
       ctx.queuedAllocations.set(player.address, [{
         colonyId,
-        food: 990,
+        food: 900,
         water: 0,
         oxygen: 0,
         shelter: 0,
@@ -877,7 +798,7 @@ describe("BattleManager connected conflict groups", function () {
     await ctx.tournament.endBattleRound();
 
     await expectRevert(
-      ctx.tournament.processPenaltyBatch(1),
+      ctx.tournament.processPopulationBatch(1),
       "WrongFinalizationPhase"
     );
     await expectRevert(
@@ -893,6 +814,46 @@ describe("BattleManager connected conflict groups", function () {
     expect((await ctx.tournament.lastEndedRound()).toString()).to.equal(
       String(roundId)
     );
+  });
+
+  it("processes population insolvency in bounded player batches", async function () {
+    const ctx = await deployGame(3);
+    const [atThreshold, aboveThreshold] = ctx.players;
+    const atThresholdColony = await firstColonyOf(ctx, atThreshold);
+    const aboveThresholdColony = await firstColonyOf(ctx, aboveThreshold);
+    queueAllocation(ctx, atThreshold, atThresholdColony, { mining: 940 });
+    queueAllocation(ctx, aboveThreshold, aboveThresholdColony, { mining: 939 });
+
+    const roundId = await startRound(ctx);
+    const reveals = [];
+    for (const player of ctx.players) {
+      const salt = await commitAction(
+        ctx,
+        player,
+        roundId,
+        defend(),
+        `population-batch-${player.address}`
+      );
+      reveals.push({ player, salt });
+    }
+    await revealPhase();
+    for (const item of reveals) {
+      await revealAction(ctx, item.player, defend(), item.salt);
+    }
+    await resolvePhase();
+    await resolveTable(ctx, roundId);
+    await ctx.tournament.endBattleRound();
+    await ctx.tournament.processMiningBatch(25);
+
+    expect((await ctx.tournament.finalizationPhase()).toString()).to.equal("2");
+    await ctx.tournament.processPopulationBatch(1);
+    expect((await ctx.tournament.finalizationPhase()).toString()).to.equal("2");
+    expect((await ctx.tournament.playerInfo(atThreshold.address)).active).to.equal(false);
+    expect((await ctx.tournament.playerInfo(aboveThreshold.address)).active).to.equal(true);
+
+    await ctx.tournament.processPopulationBatch(2);
+    expect((await ctx.tournament.finalizationPhase()).toString()).to.equal("3");
+    expect((await ctx.tournament.activePlayerCount()).toString()).to.equal("2");
   });
 
   it("does not allow unresolved conflicts to be skipped by starting the next round", async function () {
@@ -1005,7 +966,7 @@ describe("BattleManager connected conflict groups", function () {
 
     const firstLandLord = await landLordOfColony(ctx, first);
     const secondLandLord = await landLordOfColony(ctx, second);
-    expect((await firstLandLord.getGold()).toString()).to.equal("600");
+    expect((await firstLandLord.getGold()).toString()).to.equal("660");
     expect((await secondLandLord.getGold()).toString()).to.equal("1000");
   });
 
@@ -1045,7 +1006,7 @@ describe("BattleManager connected conflict groups", function () {
 
     const firstLandLord = await landLordOfColony(ctx, first);
     const secondLandLord = await landLordOfColony(ctx, second);
-    expect((await firstLandLord.getGold()).toString()).to.equal("600");
+    expect((await firstLandLord.getGold()).toString()).to.equal("660");
     expect((await secondLandLord.getGold()).toString()).to.equal("1000");
   });
 
@@ -1070,10 +1031,9 @@ describe("BattleManager connected conflict groups", function () {
     const bLandLord = await landLordOf(ctx, b);
     expect((await aLandLord.getGold()).toString()).to.equal("1020");
     expect((await bLandLord.getGold()).toString()).to.equal("980");
-    expect((await bLandLord.supportCredits()).toString()).to.equal("0");
   });
 
-  it("stores uncontested BUILD support credit for every active colony during table resolution", async function () {
+  it("applies population relief to every eligible colony after uncontested BUILD", async function () {
     const ctx = await deployGame(2);
     const [a, b] = ctx.players;
     const roundId = await activateFirstExpansion(ctx, [b]);
@@ -1086,9 +1046,6 @@ describe("BattleManager connected conflict groups", function () {
     await revealAction(ctx, b, bAction, bSalt);
     const firstLandLord = await landLordOfColony(ctx, bColonies[0].toNumber());
     const secondLandLord = await landLordOfColony(ctx, bColonies[1].toNumber());
-    expect((await firstLandLord.supportCredits()).toString()).to.equal("0");
-    expect((await secondLandLord.supportCredits()).toString()).to.equal("0");
-
     await resolvePhase();
     await resolveTable(ctx, roundId);
     await finalizeBattleRound(ctx);
@@ -1101,23 +1058,18 @@ describe("BattleManager connected conflict groups", function () {
     const firstResources = await firstLandLord.getResources();
     const secondResources = await secondLandLord.getResources();
 
-    // The non-BUILD player remains eligible; its new zero-Terraform colony
-    // absorbs maintenance while the successful builder is lottery-exempt.
-    expect(aResources.gold.toString()).to.equal("700");
-    expect(aExpansionResources.gold.lt(1000)).to.equal(true);
-    expect(firstResources.gold.toString()).to.equal("700");
-    expect(secondResources.terraform.toString()).to.equal("0");
+    expect(aResources.gold.toString()).to.equal("760");
+    expect(aExpansionResources.gold.toString()).to.equal("1000");
+    expect(firstResources.gold.toString()).to.equal("760");
     expect(secondResources.attack.toString()).to.equal("0");
     expect(secondResources.defense.toString()).to.equal("0");
     expect(secondResources.mining.toString()).to.equal("0");
     expect(secondResources.infrastructure.toString()).to.equal("0");
-    expect((await firstLandLord.supportCredits()).toString()).to.equal("1");
-    expect((await secondLandLord.supportCredits()).toString()).to.equal("1");
-    expect((await firstLandLord.effectiveRoundForSupport(roundId)).toString()).to.equal("1");
-    expect((await secondLandLord.effectiveRoundForSupport(roundId)).toString()).to.equal("1");
+    expect((await firstLandLord.successfulBuildCount()).toString()).to.equal("1");
+    expect((await secondLandLord.successfulBuildCount()).toString()).to.equal("1");
   });
 
-  it("scores BUILD army from the attacked colony without storing credit when attacked", async function () {
+  it("does not grant population relief when BUILD is attacked", async function () {
     const ctx = await deployGame(2);
     const [a, b] = ctx.players;
     const randomness = 12345;
@@ -1162,11 +1114,9 @@ describe("BattleManager connected conflict groups", function () {
       attackPower.mul(MAX_ARMY_BONUS).div(maxPower).toNumber() +
       BUILD_VULNERABILITY_BONUS;
 
-    const buildLandLord = await landLordOfColony(ctx, buildColony);
-    expect((await buildLandLord.supportCredits()).toString()).to.equal("0");
-    expect((await attackedLandLord.supportCredits()).toString()).to.equal("0");
     expect((await ctx.battleManager.successfulBuildRound(b.address)).toString())
       .to.equal("0");
+    expect((await attackedLandLord.successfulBuildCount()).toString()).to.equal("0");
     expect(aEvent.args.score.toString()).to.equal(expectedAttackerScore.toString());
     expect(bEvent.args.score.toString()).to.equal(expectedScore.toString());
     expect(bEvent.args.sourceColonyId.toString()).to.equal("0");
@@ -1234,16 +1184,16 @@ describe("BattleManager connected conflict groups", function () {
     queueAllocation(ctx, a, colonyId, { food: 10, army: 5 });
     const salt = await commitAction(ctx, a, roundId, defend(), "hidden-allocation");
 
-    expect((await landLord.getResources()).terraform.toString()).to.equal("0");
+    expect((await landLord.getResources()).mining.toString()).to.equal("0");
     await revealPhase();
     await revealAction(ctx, a, defend(), salt);
-    expect((await landLord.getResources()).terraform.toString()).to.equal("0");
+    expect((await landLord.getResources()).mining.toString()).to.equal("0");
 
     await resolvePhase();
     await resolveTable(ctx, roundId);
     const resources = await landLord.getResources();
     expect(resources.gold.toString()).to.equal("980");
-    expect(resources.terraform.toString()).to.equal("10");
+    expect(resources.mining.toString()).to.equal("10");
     expect(resources.attack.toString()).to.equal("5");
   });
 
@@ -1291,7 +1241,11 @@ describe("BattleManager connected conflict groups", function () {
 
     const bColonies = await ctx.tournament.getPlayerColonies(b.address);
     const attackedColony = bColonies[0].toNumber();
-    queueAllocation(ctx, b, attackedColony, { food: 680 });
+    const attackedLandLord = await landLordOfColony(ctx, attackedColony);
+    const attackedGold = await attackedLandLord.getGold();
+    queueAllocation(ctx, b, attackedColony, {
+      food: attackedGold.sub(35).toNumber(),
+    });
 
     const aAction = attack(b.address, 35);
     aAction.targetColonyId = attackedColony;
@@ -1618,248 +1572,6 @@ describe("BattleManager connected conflict groups", function () {
 
     const groups = await resolveTable(ctx, roundId);
     expect(groups.length).to.equal(0);
-  });
-
-  it("excludes BUILD players from the Terraform penalty lottery", async function () {
-    const ctx = await deployGame(2);
-    const [builder, defender] = ctx.players;
-    const builderColonyId = await firstColonyOf(ctx, builder);
-    const defenderColonyId = await firstColonyOf(ctx, defender);
-    queueAllocation(ctx, builder, builderColonyId, { terraform: 100 });
-    queueAllocation(ctx, defender, defenderColonyId, { terraform: 100 });
-
-    const roundId = await startRound(ctx, 98765);
-    const builderSalt = await commitAction(
-      ctx, builder, roundId, build(), "lottery-builder"
-    );
-    const defenderSalt = await commitAction(
-      ctx, defender, roundId, defend(), "lottery-defender"
-    );
-    await revealPhase();
-    await revealAction(ctx, builder, build(), builderSalt);
-    await revealAction(ctx, defender, defend(), defenderSalt);
-    await resolvePhase();
-    await resolveTable(ctx, roundId);
-    expect((await ctx.battleManager.successfulBuildRound(builder.address)).toString())
-      .to.equal(roundId.toString());
-    await finalizeBattleRound(ctx);
-
-    const builderLandLord = await landLordOfColony(ctx, builderColonyId);
-    const defenderLandLord = await landLordOfColony(ctx, defenderColonyId);
-    const builderEvents = await builderLandLord.queryFilter(
-      builderLandLord.filters.ResourcePenaltyApplied(
-        roundId, builder.address, builderColonyId
-      )
-    );
-    const defenderEvents = await defenderLandLord.queryFilter(
-      defenderLandLord.filters.ResourcePenaltyApplied(
-        roundId, defender.address, defenderColonyId
-      )
-    );
-
-    expect(builderEvents.length).to.equal(0);
-    expect(defenderEvents.length).to.equal(1);
-  });
-
-  it("selects one weighted player per resource and favors the lower resource ratio", async function () {
-    const ctx = await deployGame(2);
-    const [a, b] = ctx.players;
-    const aColonyId = await firstColonyOf(ctx, a);
-    const bColonyId = await firstColonyOf(ctx, b);
-    const aLandLord = await landLordOfColony(ctx, aColonyId);
-    const bLandLord = await landLordOfColony(ctx, bColonyId);
-
-    queueAllocation(ctx, a, aColonyId, {
-      food: 200,
-      water: 45,
-      oxygen: 45,
-      shelter: 45,
-      army: 45,
-    });
-    queueAllocation(ctx, b, bColonyId, {
-      food: 60,
-      water: 45,
-      oxygen: 45,
-      shelter: 45,
-      army: 45,
-    });
-
-    const weights = [penaltyWeight(200, 1000), penaltyWeight(60, 1000)];
-    const seed = weightedPenaltySeed(1, 1, 0, weights, 1);
-    const roundId = await startRound(ctx, seed);
-    const requestIdBefore = await ctx.vrfProvider.nextRequestId();
-    const aSalt = await commitAction(ctx, a, roundId, defend(), "penalty-a");
-    const bSalt = await commitAction(ctx, b, roundId, defend(), "penalty-b");
-
-    await revealPhase();
-    await revealAction(ctx, a, defend(), aSalt);
-    await revealAction(ctx, b, defend(), bSalt);
-    await resolvePhase();
-    await resolveTable(ctx, roundId);
-    await finalizeBattleRound(ctx);
-
-    const requestIdAfter = await ctx.vrfProvider.nextRequestId();
-    const aEvents = await aLandLord.queryFilter(
-      aLandLord.filters.ResourcePenaltyApplied(roundId, a.address, aColonyId)
-    );
-    const bEvents = await bLandLord.queryFilter(
-      bLandLord.filters.ResourcePenaltyApplied(roundId, b.address, bColonyId)
-    );
-    const foodPenalties = [...aEvents, ...bEvents].filter(
-      (event) => Number(event.args.resource) === 0
-    );
-
-    expect(requestIdAfter.sub(requestIdBefore).toString()).to.equal("1");
-    expect(foodPenalties.length).to.equal(1);
-    expect(foodPenalties[0].args.player).to.equal(b.address);
-    const expectedPenalty = penaltyAmount(seed, 1, 1, 0, bColonyId, 60);
-    expect(foodPenalties[0].args.requested.toString()).to.equal(
-      expectedPenalty.toString()
-    );
-    expect(expectedPenalty.toNumber()).to.be.within(3, 12);
-    expect((await aLandLord.getResources()).terraform.toString()).to.equal("200");
-    expect((await bLandLord.getResources()).terraform.toString()).to.equal(
-      ethers.BigNumber.from(60).sub(expectedPenalty).toString()
-    );
-  });
-
-  it("penalizes the same VRF-selected survival resource at each active table", async function () {
-    const ctx = await deployGame(10);
-    await fundAllSurvival(ctx);
-    const tableOne = new Set(await ctx.tournament.getTablePlayers(1));
-    const tableTwo = new Set(await ctx.tournament.getTablePlayers(2));
-    const roundId = await startRound(ctx, 777);
-    const reveals = [];
-
-    for (const player of ctx.players) {
-      const salt = await commitAction(
-        ctx,
-        player,
-        roundId,
-        defend(),
-        `table-penalty-${player.address}`
-      );
-      reveals.push({ player, salt });
-    }
-    await revealPhase();
-    for (const item of reveals) {
-      await revealAction(ctx, item.player, defend(), item.salt);
-    }
-    await resolvePhase();
-    await requestRoundRandomness(ctx, roundId);
-    await ctx.tournament.resolveTableConflicts(1, roundId);
-    await ctx.tournament.resolveTableConflicts(2, roundId);
-    await finalizeBattleRound(ctx);
-
-    const resourcePenalties = [];
-    for (const player of ctx.players) {
-      const colonyId = await firstColonyOf(ctx, player);
-      const landLord = await landLordOfColony(ctx, colonyId);
-      const events = await landLord.queryFilter(
-        landLord.filters.ResourcePenaltyApplied(roundId, player.address, colonyId)
-      );
-      resourcePenalties.push(...events);
-    }
-
-    const selectedResource = selectedPenaltyResource(777, roundId);
-    expect(selectedResource).to.be.within(0, 3);
-    expect(resourcePenalties.length).to.equal(2);
-    expect(
-      resourcePenalties.every(
-        (event) => Number(event.args.resource) === selectedResource
-      )
-    ).to.equal(true);
-    expect(
-      resourcePenalties.filter((event) => tableOne.has(event.args.player)).length
-    ).to.equal(1);
-    expect(
-      resourcePenalties.filter((event) => tableTwo.has(event.args.player)).length
-    ).to.equal(1);
-  });
-
-  it("applies a selected player's penalty to their weakest eligible colony", async function () {
-    const ctx = await deployGame(2);
-    const [a, b] = ctx.players;
-    const roundId = await activateFirstExpansion(ctx, [a]);
-    const aColonies = await ctx.tournament.getPlayerColonies(a.address);
-    const originalColonyId = aColonies[0].toNumber();
-    const expandedColonyId = aColonies[1].toNumber();
-    const originalLandLord = await landLordOfColony(ctx, originalColonyId);
-    const expandedLandLord = await landLordOfColony(ctx, expandedColonyId);
-    const bColonyId = await firstColonyOf(ctx, b);
-    const bLandLord = await landLordOfColony(ctx, bColonyId);
-    const bColonies = await ctx.tournament.getPlayerColonies(b.address);
-    const bExpandedColonyId = bColonies[1].toNumber();
-    const bExpandedLandLord = await landLordOfColony(ctx, bExpandedColonyId);
-    const original = await originalLandLord.getResources();
-    const bResources = await bLandLord.getResources();
-    const supportRequirement = 45;
-    const originalFoodTopUp = Math.max(
-      0,
-      supportRequirement - original.terraform.toNumber()
-    );
-    const bFoodTopUp = Math.max(
-      0,
-      supportRequirement - bResources.terraform.toNumber()
-    );
-
-    queueAllocation(ctx, a, originalColonyId, {
-      terraform: 40 + originalFoodTopUp,
-    });
-    queueAllocation(ctx, a, expandedColonyId, {
-      terraform: supportRequirement,
-    });
-    queueAllocation(ctx, b, bColonyId, {
-      terraform: bFoodTopUp,
-    });
-    queueAllocation(ctx, b, bExpandedColonyId, {
-      terraform: supportRequirement,
-    });
-
-    const aFood =
-      original.terraform.toNumber() + 40 + originalFoodTopUp + supportRequirement;
-    const bFood =
-      bResources.terraform.toNumber() + bFoodTopUp + supportRequirement;
-    ctx.roundRandomness = weightedPenaltySeed(
-      roundId,
-      1,
-      0,
-      [penaltyWeight(aFood, 2000), penaltyWeight(bFood, 2000)],
-      0
-    );
-
-    const aSalt = await commitAction(ctx, a, roundId, defend(), "weakest-a");
-    const bSalt = await commitAction(ctx, b, roundId, defend(), "weakest-b");
-    await revealPhase();
-    await revealAction(ctx, a, defend(), aSalt);
-    await revealAction(ctx, b, defend(), bSalt);
-    await resolvePhase();
-    await resolveTable(ctx, roundId);
-    await finalizeBattleRound(ctx);
-
-    const originalEvents = await originalLandLord.queryFilter(
-      originalLandLord.filters.ResourcePenaltyApplied(roundId, a.address, originalColonyId)
-    );
-    const expandedEvents = await expandedLandLord.queryFilter(
-      expandedLandLord.filters.ResourcePenaltyApplied(roundId, a.address, expandedColonyId)
-    );
-    const bEvents = await bLandLord.queryFilter(
-      bLandLord.filters.ResourcePenaltyApplied(roundId, b.address, bColonyId)
-    );
-    const bExpandedEvents = await bExpandedLandLord.queryFilter(
-      bExpandedLandLord.filters.ResourcePenaltyApplied(
-        roundId, b.address, bExpandedColonyId
-      )
-    );
-    expect(
-      originalEvents.length + expandedEvents.length +
-      bEvents.length + bExpandedEvents.length
-    ).to.equal(1);
-    // If the weighted lottery selects player A, its lower Terraform-ratio colony is hit.
-    if (originalEvents.length + expandedEvents.length === 1) {
-      expect(originalEvents.length).to.equal(0);
-      expect(expandedEvents.length).to.equal(1);
-    }
   });
 
   it("treats an attacked non-revealer as DEFEND", async function () {

@@ -48,7 +48,6 @@ describe("TournamentManager VRF timeout and retry", function () {
     const StETH = await ethers.getContractFactory("StETHMock");
     const Adapter = await ethers.getContractFactory("StETHYieldAdapter");
     const LandLord = await ethers.getContractFactory("LandLord");
-    const ResourceLottery = await ethers.getContractFactory("ResourceLottery");
     const Tournament = await ethers.getContractFactory("TournamentManager");
     const Battle = await ethers.getContractFactory("BattleManager");
     const Vrf = await ethers.getContractFactory("VRFProviderMock");
@@ -56,11 +55,9 @@ describe("TournamentManager VRF timeout and retry", function () {
     const stETH = await StETH.deploy();
     const adapter = await Adapter.deploy(stETH.address, ethers.constants.AddressZero);
     const implementation = await LandLord.deploy();
-    const resourceLottery = await ResourceLottery.deploy();
     const tournament = await Tournament.deploy(
       adapter.address,
       implementation.address,
-      resourceLottery.address,
       1,
       ethers.utils.parseEther("1")
     );
@@ -94,19 +91,17 @@ describe("TournamentManager VRF timeout and retry", function () {
       const phase = Number(await ctx.tournament.finalizationPhase());
       if (phase === 0) return;
       if (phase === 1) await ctx.tournament.processMiningBatch(25);
-      else if (phase === 2) await ctx.tournament.processPenaltyBatch(10);
+      else if (phase === 2) await ctx.tournament.processPopulationBatch(25);
       else if (phase === 3) {
-        await ctx.tournament.processTerraformBatch(25);
-      } else if (phase === 4) {
         await ctx.tournament.processAutomaticExpansionBatch(25);
-      } else if (phase === 5) {
+      } else if (phase === 4) {
         await ctx.tournament.processTableCompactionBatch(25);
-      } else if (phase === 6) {
+      } else if (phase === 5) {
         await ctx.tournament.processTableConsolidationBatch(25);
-      } else if (phase === 7) {
+      } else if (phase === 6) {
         await ctx.tournament.processBalanceScanBatch(50);
-      } else if (phase === 8) await ctx.tournament.applyBalanceMove();
-      else if (phase === 9) await ctx.tournament.finalizeRound();
+      } else if (phase === 7) await ctx.tournament.applyBalanceMove();
+      else if (phase === 8) await ctx.tournament.finalizeRound();
     }
   }
 
@@ -121,7 +116,6 @@ describe("TournamentManager VRF timeout and retry", function () {
       },
       allocations: [{
         colonyId,
-        terraform: 60,
         attack: 60,
         defense: 60,
         mining: 60,
