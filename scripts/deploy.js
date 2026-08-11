@@ -1,4 +1,6 @@
 const { ethers, network } = require("hardhat");
+const fs = require("fs");
+const path = require("path");
 
 async function deployContract(name, args = []) {
   const factory = await ethers.getContractFactory(name);
@@ -9,6 +11,7 @@ async function deployContract(name, args = []) {
 }
 
 async function main() {
+  const deploymentBlock = (await ethers.provider.getBlockNumber()) + 1;
   const tournamentId = process.env.TOURNAMENT_ID || "1";
   const entryDeposit = process.env.ENTRY_DEPOSIT_ETH
     ? ethers.utils.parseEther(process.env.ENTRY_DEPOSIT_ETH)
@@ -47,8 +50,9 @@ async function main() {
   await (await tournament.setBattleManager(battleManager.address)).wait();
   await (await tournament.setVrfRequestTimeout(vrfRequestTimeout)).wait();
 
+  let vrfProvider;
   if (network.name === "hardhat" || network.name === "localhost") {
-    const vrfProvider = await deployContract("VRFProviderMock", [
+    vrfProvider = await deployContract("VRFProviderMock", [
       tournament.address,
     ]);
     await (await tournament.setVrfProvider(vrfProvider.address)).wait();
@@ -66,7 +70,7 @@ async function main() {
       }
     }
 
-    const vrfProvider = await deployContract("ChainlinkVRFProvider", [
+    vrfProvider = await deployContract("ChainlinkVRFProvider", [
       tournament.address,
       process.env.VRF_COORDINATOR,
       process.env.VRF_KEY_HASH,
@@ -77,7 +81,25 @@ async function main() {
     await (await tournament.setVrfProvider(vrfProvider.address)).wait();
   }
 
+  const { chainId } = await ethers.provider.getNetwork();
+  const manifest = {
+    chainId: chainId.toString(),
+    deploymentBlock: deploymentBlock.toString(),
+    tournamentAddress: tournament.address,
+    battleManagerAddress: battleManager.address,
+    vrfProviderAddress: vrfProvider.address,
+    yieldAdapterAddress: yieldAdapter.address,
+    landLordImplementationAddress: landLordImplementation.address,
+  };
+  const manifestPath = path.resolve(
+    process.env.DEPLOYMENT_MANIFEST_PATH ||
+      path.join("deployments", `${network.name}.json`)
+  );
+  fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
+  fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+
   console.log(`Deployed tournament stack on ${network.name}`);
+  console.log(`Deployment manifest: ${manifestPath}`);
 }
 
 main().catch((error) => {

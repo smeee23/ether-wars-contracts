@@ -12,8 +12,10 @@ const accounts = (() => {
     };
   }
 
-  return [];
+  return undefined;
 })();
+
+const configuredAccounts = accounts ? { accounts } : {};
 
 module.exports = {
   solidity: {
@@ -38,21 +40,21 @@ module.exports = {
     },
     localhost: {
       url: process.env.LOCALHOST_RPC_URL || "http://127.0.0.1:8545",
-      accounts,
+      ...configuredAccounts,
     },
     polygonMumbai: {
       url: process.env.POLYGON_MUMBAI_RPC_URL || "",
-      accounts,
+      ...configuredAccounts,
       chainId: 80001,
     },
     polygon: {
       url: process.env.POLYGON_RPC_URL || "",
-      accounts,
+      ...configuredAccounts,
       chainId: 137,
     },
     mainnet: {
       url: process.env.MAINNET_RPC_URL || "",
-      accounts,
+      ...configuredAccounts,
       chainId: 1,
     },
   },

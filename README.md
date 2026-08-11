@@ -123,3 +123,18 @@ npm install
 npm run compile
 npm test
 ```
+
+For a repeatable local simulation, start a node and run deployment and simulation
+in separate terminals:
+
+```bash
+npm run node
+npm run deploy -- --network localhost
+npm run simulate
+```
+
+Deployment writes `deployments/localhost.json`, which contains the chain ID,
+starting block, and deployed stack addresses for local indexers. The simulator
+reads that manifest and runs three deterministic four-player rounds by default.
+Override those defaults with `SIMULATION_ROUNDS` and `SIMULATION_PLAYERS` (2–9),
+or set `DEPLOYMENT_MANIFEST_PATH` for both commands to use another manifest path.

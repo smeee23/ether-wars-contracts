@@ -3,7 +3,8 @@
     "compile": "hardhat compile",
     "test": "hardhat test",
     "node": "hardhat node",
-    "deploy": "hardhat run scripts/deploy.js"
+    "deploy": "hardhat run scripts/deploy.js",
+    "simulate": "hardhat run scripts/simulate-rounds.js --network localhost"
   },
   "dependencies": {
     "@aave/protocol-js": "^4.0.2",
