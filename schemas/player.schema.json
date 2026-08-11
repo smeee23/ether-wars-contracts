@@ -112,14 +112,19 @@
         },
         "worldState": {
           "type": "object",
+          "description": "Reference to frontend-originated visual state published separately from blockchain-derived colony data.",
           "additionalProperties": false,
-          "required": ["version", "buildings"],
+          "required": ["path", "schemaVersion", "stateVersion", "hash"],
           "properties": {
-            "version": { "type": "integer", "minimum": 1 },
-            "buildings": {
-              "type": "array",
-              "description": "UI-only building data; not canonical contract state.",
-              "items": { "type": "object" }
+            "path": { "type": "string", "minLength": 1 },
+            "schemaVersion": { "type": "integer", "const": 1 },
+            "stateVersion": { "$ref": "definitions.schema.json#/definitions/uintString" },
+            "hash": {
+              "description": "Optional canonical content hash. Null until the hashing format is finalized.",
+              "anyOf": [
+                { "$ref": "definitions.schema.json#/definitions/bytes32" },
+                { "type": "null" }
+              ]
             }
           }
         }

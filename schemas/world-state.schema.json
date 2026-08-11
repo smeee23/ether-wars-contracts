@@ -1,0 +1,29 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "world-state.schema.json",
+  "title": "Ether Wars temporary colony world state",
+  "description": "Provisional frontend-originated visual colony state. This is a temporary persistence envelope, not a finalized building or terrain format.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "chainId", "tournamentAddress", "tournamentId",
+    "playerId", "colonyId", "stateVersion", "roundNumber", "buildings"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "chainId": { "$ref": "definitions.schema.json#/definitions/uintString" },
+    "tournamentAddress": { "$ref": "definitions.schema.json#/definitions/address" },
+    "tournamentId": { "$ref": "definitions.schema.json#/definitions/uintString" },
+    "playerId": { "$ref": "definitions.schema.json#/definitions/uintString" },
+    "colonyId": { "$ref": "definitions.schema.json#/definitions/uintString" },
+    "stateVersion": { "$ref": "definitions.schema.json#/definitions/uintString" },
+    "roundNumber": { "$ref": "definitions.schema.json#/definitions/uintString" },
+    "buildings": {
+      "type": "array",
+      "description": "Temporary placeholder. Building objects are deliberately unconstrained until the frontend persistence format is finalized.",
+      "items": {
+        "type": "object"
+      }
+    }
+  }
+}

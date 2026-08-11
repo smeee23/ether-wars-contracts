@@ -61,8 +61,10 @@
         "projectedNetGoldChange": "16"
       },
       "worldState": {
-        "version": 1,
-        "buildings": []
+        "path": "../world-states/12/1.json",
+        "schemaVersion": 1,
+        "stateVersion": "1",
+        "hash": null
       }
     }
   ],

@@ -8,12 +8,14 @@
     "id": "8-23847192",
     "blockNumber": "23847192",
     "blockHash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    "timestamp": "1785950000"
+    "timestamp": "1785971100"
   },
   "publishedAt": "2026-08-05T17:20:00Z",
   "paths": {
     "tournament": "./tournament.json",
+    "rounds": "./rounds/{roundId}.json",
     "tables": "./tables/{tableId}.json",
-    "players": "./players/{playerId}.json"
+    "players": "./players/{playerId}.json",
+    "worldStates": "./world-states/{playerId}/{colonyId}.json"
   }
 }

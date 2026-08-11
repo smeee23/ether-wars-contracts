@@ -25,11 +25,19 @@
     "paths": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["tournament", "tables", "players"],
+      "required": ["tournament", "rounds", "tables", "players", "worldStates"],
       "properties": {
         "tournament": { "type": "string", "minLength": 1 },
+        "rounds": { "type": "string", "pattern": "\\{roundId\\}" },
         "tables": { "type": "string", "pattern": "\\{tableId\\}" },
-        "players": { "type": "string", "pattern": "\\{playerId\\}" }
+        "players": { "type": "string", "pattern": "\\{playerId\\}" },
+        "worldStates": {
+          "type": "string",
+          "allOf": [
+            { "pattern": "\\{playerId\\}" },
+            { "pattern": "\\{colonyId\\}" }
+          ]
+        }
       }
     }
   }

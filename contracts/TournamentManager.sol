@@ -168,7 +168,7 @@ contract TournamentManager is ReentrancyGuard {
     mapping(address => uint256) public planAppliedRound;
     RoundFinalization private roundFinalization;
 
-    event PlayerRegistered(address indexed player);
+    event PlayerRegistered(address indexed player, uint256 indexed playerID);
     event ColonyCreated(
         uint256 indexed colonyId,
         address indexed owner,
@@ -377,7 +377,7 @@ contract TournamentManager is ReentrancyGuard {
         activePlayerXor ^= uint160(player);
         _assignToOpenTable(player);
 
-        emit PlayerRegistered(player);
+        emit PlayerRegistered(player, players.length - 1);
     }
 
     function startTournament()

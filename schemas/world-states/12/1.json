@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "chainId": "1",
+  "tournamentAddress": "0x1111111111111111111111111111111111111111",
+  "tournamentId": "42",
+  "playerId": "12",
+  "colonyId": "1",
+  "stateVersion": "1",
+  "roundNumber": "8",
+  "buildings": []
+}

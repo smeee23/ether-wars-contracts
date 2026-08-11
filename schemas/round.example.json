@@ -7,41 +7,76 @@
     "id": "8-23847192",
     "blockNumber": "23847192",
     "blockHash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    "timestamp": "1785950000"
+    "timestamp": "1785971100"
   },
   "roundNumber": "8",
-  "startingActivePlayerCount": "63",
-  "endingActivePlayerCount": "61",
-  "eliminatedPlayerCount": "2",
-  "startingTableCount": "8",
-  "playersEliminated": [
-        {
-          "playerId": "19",
-          "address": "0x7777777777777777777777777777777777777777",
-          "tableId": "3"
-        },
-        {
-          "playerId": "2",
-          "address": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-          "tableId": "4"
-        }
-  ],
-  "commitStartTimestamp": "1785949200",
-  "commitEndTimestamp": "1785963600",
-  "revealStartTimestamp": "1785963600",
-  "revealEndTimestamp": "1785970800",
   "status": "FINALIZED",
-  "finalizedTimestamp": "1785971100",
-  "finalizedBlockNumber": "23847192",
-  "internal-completion": 
-    {
-        "revealsClosed": true,
-        "battlesResolved": true,
-        "resourceSettlementCompleted": true,
-        "populationChecksCompleted": true,
-        "expansionCompleted": true,
-        "nextRoundInitialized": true,
-        "tablesResolved": "7",
-        "tablesRequiringResolution": "7"
-    }
+  "timing": {
+    "commitStartTimestamp": "1785949200",
+    "commitEndTimestamp": "1785963600",
+    "revealStartTimestamp": "1785963600",
+    "revealEndTimestamp": "1785970800",
+    "finalizedTimestamp": "1785971100"
+  },
+  "lifecycleBlocks": {
+    "startedBlockNumber": "23846800",
+    "startedBlockHash": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "finalizedBlockNumber": "23847192",
+    "finalizedBlockHash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "players": {
+    "startingActiveCount": "63",
+    "endingActiveCount": "61",
+    "committedCount": "62",
+    "revealedCount": "60",
+    "defaultDefendCount": "3",
+    "eliminatedCount": "2",
+    "eliminated": [
+      {
+        "playerId": "19",
+        "address": "0x7777777777777777777777777777777777777777",
+        "tableId": "3"
+      },
+      {
+        "playerId": "2",
+        "address": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "tableId": "4"
+      }
+    ]
+  },
+  "tables": {
+    "startingCount": "8",
+    "startingActiveCount": "7",
+    "requiredResolutionCount": "7",
+    "resolvedCount": "7",
+    "endingCount": "8",
+    "endingActiveCount": "7"
+  },
+  "randomness": {
+    "value": "9142837465019283746501928374650192837465",
+    "requestId": "784",
+    "attempts": "1",
+    "requestedAt": "1785963604",
+    "fulfilled": true
+  },
+  "activity": {
+    "conflictGroupCount": "14",
+    "successfulBuildPlayerCount": "9",
+    "coloniesCreatedCount": "9",
+    "coloniesEliminatedCount": "2",
+    "populationChecksPerformed": "63"
+  },
+  "settlementTotals": {
+    "conflictGoldTransferred": "6800000000000000000",
+    "miningGoldCredited": "12000000000000000000"
+  },
+  "completion": {
+    "revealPeriodClosed": true,
+    "randomnessFulfilled": true,
+    "battlesResolved": true,
+    "miningSettlementCompleted": true,
+    "populationChecksCompleted": true,
+    "automaticExpansionsCompleted": true,
+    "tableRebalancingCompleted": true
+  }
 }
