@@ -178,6 +178,11 @@ contract TournamentManager is ReentrancyGuard {
     event ColonyEliminated(uint256 indexed colonyId, address indexed owner);
     event TournamentStarted();
     event TournamentCompleted();
+    event TournamentFinalized(
+        uint256 indexed tournamentId,
+        address indexed winner,
+        uint256 finalRound
+    );
     event WinnerFinalized(address indexed winner);
     event BattleManagerSet(address indexed battleManager);
     event VrfProviderSet(address indexed vrfProvider);
@@ -1191,6 +1196,7 @@ contract TournamentManager is ReentrancyGuard {
         }
         delete roundFinalization;
         state = TournamentState.Complete;
+        emit TournamentFinalized(tournamentId, winner, lastEndedRound);
         emit TournamentCompleted();
     }
 

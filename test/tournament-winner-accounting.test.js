@@ -110,10 +110,19 @@ describe("TournamentManager winner and principal accounting", function () {
       receipt.blockNumber,
       receipt.blockNumber
     );
+    const finalizedEvents = await tournament.queryFilter(
+      tournament.filters.TournamentFinalized(),
+      receipt.blockNumber,
+      receipt.blockNumber
+    );
 
     expect(await tournament.winner()).to.equal(alice.address);
     expect(winnerEvents.length).to.equal(1);
     expect(winnerEvents[0].args.winner).to.equal(alice.address);
+    expect(finalizedEvents.length).to.equal(1);
+    expect(finalizedEvents[0].args.tournamentId.toString()).to.equal("1");
+    expect(finalizedEvents[0].args.winner).to.equal(alice.address);
+    expect(finalizedEvents[0].args.finalRound.toString()).to.equal("0");
     expect((await tournament.outstandingPrincipalStETH()).toString()).to.equal(
       entryDeposit.toString()
     );
@@ -138,8 +147,18 @@ describe("TournamentManager winner and principal accounting", function () {
     const { alice, bob, adapter, stETH, tournament } = await deployTournament();
     const emergencySurplus = ethers.utils.parseEther("0.2");
 
-    await tournament.completeTournament();
+    const completion = await tournament.completeTournament();
+    const receipt = await completion.wait();
+    const finalizedEvents = await tournament.queryFilter(
+      tournament.filters.TournamentFinalized(),
+      receipt.blockNumber,
+      receipt.blockNumber
+    );
     expect(await tournament.winner()).to.equal(ethers.constants.AddressZero);
+    expect(finalizedEvents.length).to.equal(1);
+    expect(finalizedEvents[0].args.winner).to.equal(
+      ethers.constants.AddressZero
+    );
     await stETH.mint(adapter.address, emergencySurplus);
 
     await tournament.connect(alice).claimPrincipal();

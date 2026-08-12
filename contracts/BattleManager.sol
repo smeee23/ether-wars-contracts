@@ -140,6 +140,18 @@ contract BattleManager is ReentrancyGuard {
         uint256 targetColonyId,
         uint256 wager
     );
+    event BuildRevealed(
+        uint256 indexed roundId,
+        address indexed player
+    );
+    event DefendRevealed(
+        uint256 indexed roundId,
+        address indexed player
+    );
+    event DefaultDefended(
+        uint256 indexed roundId,
+        address indexed player
+    );
     event ConflictParticipant(
         uint256 indexed roundId,
         uint256 indexed tableId,
@@ -353,8 +365,12 @@ contract BattleManager is ReentrancyGuard {
 
         GameTypes.Action[] memory actions = new GameTypes.Action[](players.length);
         for (uint256 i = 0; i < players.length; i++) {
-            _applyRevealedPlan(roundId, players[i]);
-            actions[i] = _getActionOrDefault(roundId, players[i]);
+            address player = players[i];
+            _applyRevealedPlan(roundId, player);
+            actions[i] = _getActionOrDefault(roundId, player);
+            if (revealedRound[player] != roundId) {
+                emit DefaultDefended(roundId, player);
+            }
         }
 
         bool[] memory visited = new bool[](players.length);
@@ -393,11 +409,13 @@ contract BattleManager is ReentrancyGuard {
             require(action.amount == 0, "build wager");
             require(action.sourceColonyId == 0, "build source colony");
             require(action.targetColonyId == 0, "build target colony");
+            emit BuildRevealed(currentRound, player);
         } else if (action.actionType == GameTypes.ActionType.DEFEND) {
             require(action.target == address(0), "defend target");
             require(action.amount == 0, "non-attack wager");
             require(action.sourceColonyId == 0, "defend source colony");
             require(action.targetColonyId == 0, "defend target colony");
+            emit DefendRevealed(currentRound, player);
         } else {
             revert("invalid action");
         }
