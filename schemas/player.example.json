@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "chainId": "1",
   "tournamentAddress": "0x1111111111111111111111111111111111111111",
   "tournamentId": "42",
@@ -76,6 +76,83 @@
     "actionStatus": "NONE",
     "action": null
   },
+  "roundHistory": [
+    {
+      "roundId": "7",
+      "action": {
+        "type": "ATTACK",
+        "targetAddress": "0x7777777777777777777777777777777777777777",
+        "wager": "80",
+        "sourceColonyId": "1",
+        "targetColonyId": "4"
+      },
+      "colonies": [
+        {
+          "colonyId": "1",
+          "allocation": {
+            "attack": "20",
+            "defense": "0",
+            "mining": "10",
+            "infrastructure": "0"
+          },
+          "startingResources": {
+            "gold": "1250",
+            "attack": "70",
+            "defense": "130",
+            "mining": "290",
+            "infrastructure": "110"
+          },
+          "resourceChanges": [
+            {
+              "blockNumber": "23847050",
+              "transactionHash": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "logIndex": "12",
+              "delta": {
+                "gold": "-30",
+                "attack": "20",
+                "defense": "0",
+                "mining": "10",
+                "infrastructure": "0"
+              },
+              "resourcesAfter": {
+                "gold": "1220",
+                "attack": "90",
+                "defense": "130",
+                "mining": "300",
+                "infrastructure": "110"
+              }
+            },
+            {
+              "blockNumber": "23847050",
+              "transactionHash": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "logIndex": "18",
+              "delta": {
+                "gold": "20",
+                "attack": "0",
+                "defense": "0",
+                "mining": "0",
+                "infrastructure": "0"
+              },
+              "resourcesAfter": {
+                "gold": "1240",
+                "attack": "90",
+                "defense": "130",
+                "mining": "300",
+                "infrastructure": "110"
+              }
+            }
+          ],
+          "endingResources": {
+            "gold": "1240",
+            "attack": "90",
+            "defense": "130",
+            "mining": "300",
+            "infrastructure": "110"
+          }
+        }
+      ]
+    }
+  ],
   "neighbors": [
     {
       "playerId": "19",

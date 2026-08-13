@@ -249,6 +249,16 @@ contract TournamentManager is ReentrancyGuard {
         uint256 population,
         bool eliminated
     );
+    event ColonyResourcesUpdated(
+        uint256 indexed roundId,
+        uint256 indexed colonyId,
+        address indexed player,
+        uint256 gold,
+        uint256 attack,
+        uint256 defense,
+        uint256 mining,
+        uint256 infrastructure
+    );
     event TableCreated(uint256 indexed tableId);
     event TableAssigned(address indexed player, uint256 indexed tableId);
     event PlayerMovedTable(
@@ -855,6 +865,7 @@ contract TournamentManager is ReentrancyGuard {
                 roundId,
                 conflictWinner,
                 loser,
+                resolvedWinnerColony,
                 winnerLandLord,
                 paymentColonyIds[i],
                 groupStake
@@ -926,26 +937,31 @@ contract TournamentManager is ReentrancyGuard {
 
         planAppliedRound[player] = roundId;
         for (uint256 i = 0; i < plan.allocations.length; i++) {
-            _applyColonyAllocation(plan.allocations[i]);
+            _applyColonyAllocation(player, roundId, plan.allocations[i]);
         }
 
     }
 
     function _applyColonyAllocation(
+        address player,
+        uint256 roundId,
         GameTypes.ColonyAllocation calldata allocation
     ) internal {
         LandLord(colonyInfo[allocation.colonyId].landLord).allocateResources(
             allocation.attack,
             allocation.defense,
             allocation.mining,
-            allocation.infrastructure
+            allocation.infrastructure,
+            roundId
         );
+        _emitColonyResourcesUpdated(roundId, allocation.colonyId, player);
     }
 
     function _settleConflictLoser(
         uint256 roundId,
         address conflictWinner,
         address loser,
+        uint256 winnerColonyId,
         address winnerLandLord,
         uint256 paymentColonyId,
         uint256 groupStake
@@ -977,6 +993,28 @@ contract TournamentManager is ReentrancyGuard {
             groupStake,
             transferred,
             loserEliminated
+        );
+        _emitColonyResourcesUpdated(roundId, loserColonyId, loser);
+        _emitColonyResourcesUpdated(roundId, winnerColonyId, conflictWinner);
+    }
+
+    function _emitColonyResourcesUpdated(
+        uint256 roundId,
+        uint256 colonyId,
+        address player
+    ) internal {
+        LandLord.Resources memory resources = LandLord(
+            colonyInfo[colonyId].landLord
+        ).getResources();
+        emit ColonyResourcesUpdated(
+            roundId,
+            colonyId,
+            player,
+            resources.gold,
+            resources.attack,
+            resources.defense,
+            resources.mining,
+            resources.infrastructure
         );
     }
 
@@ -1350,6 +1388,7 @@ contract TournamentManager is ReentrancyGuard {
             if (!_isColonyAvailableForRound(colonyId, roundId)) continue;
 
             LandLord(colony.landLord).settleMining(roundId);
+            _emitColonyResourcesUpdated(roundId, colonyId, player);
         }
     }
 

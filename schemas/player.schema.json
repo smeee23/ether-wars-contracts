@@ -8,10 +8,10 @@
     "schemaVersion", "chainId", "tournamentAddress", "tournamentId", "snapshot",
     "playerId", "address", "registered", "active", "eliminatedRound", "tableId",
     "seat", "activeColonyCount", "expansionsUsed", "principal",
-    "colonies", "roundState", "neighbors"
+    "colonies", "roundState", "roundHistory", "neighbors"
   ],
   "properties": {
-    "schemaVersion": { "type": "integer", "const": 1 },
+    "schemaVersion": { "type": "integer", "const": 2 },
     "chainId": { "$ref": "definitions.schema.json#/definitions/uintString" },
     "tournamentAddress": { "$ref": "definitions.schema.json#/definitions/address" },
     "tournamentId": { "$ref": "definitions.schema.json#/definitions/uintString" },
@@ -40,6 +40,11 @@
       "items": { "$ref": "#/definitions/colony" }
     },
     "roundState": { "$ref": "#/definitions/roundState" },
+    "roundHistory": {
+      "type": "array",
+      "description": "Blockchain-derived per-round action and per-colony resource ledger, ordered by roundId ascending.",
+      "items": { "$ref": "#/definitions/roundHistoryEntry" }
+    },
     "neighbors": {
       "type": "array",
       "items": { "$ref": "#/definitions/neighbor" }
@@ -55,6 +60,30 @@
         "defense": { "$ref": "definitions.schema.json#/definitions/uintString" },
         "mining": { "$ref": "definitions.schema.json#/definitions/uintString" },
         "infrastructure": { "$ref": "definitions.schema.json#/definitions/uintString" }
+      }
+    },
+    "resourceSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gold", "attack", "defense", "mining", "infrastructure"],
+      "properties": {
+        "gold": { "$ref": "definitions.schema.json#/definitions/uintString" },
+        "attack": { "$ref": "definitions.schema.json#/definitions/uintString" },
+        "defense": { "$ref": "definitions.schema.json#/definitions/uintString" },
+        "mining": { "$ref": "definitions.schema.json#/definitions/uintString" },
+        "infrastructure": { "$ref": "definitions.schema.json#/definitions/uintString" }
+      }
+    },
+    "resourceDelta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gold", "attack", "defense", "mining", "infrastructure"],
+      "properties": {
+        "gold": { "$ref": "definitions.schema.json#/definitions/intString" },
+        "attack": { "$ref": "definitions.schema.json#/definitions/intString" },
+        "defense": { "$ref": "definitions.schema.json#/definitions/intString" },
+        "mining": { "$ref": "definitions.schema.json#/definitions/intString" },
+        "infrastructure": { "$ref": "definitions.schema.json#/definitions/intString" }
       }
     },
     "colony": {
@@ -158,6 +187,56 @@
             { "type": "null" }
           ]
         }
+      }
+    },
+    "roundHistoryEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["roundId", "action", "colonies"],
+      "properties": {
+        "roundId": { "$ref": "definitions.schema.json#/definitions/uintString" },
+        "action": {
+          "description": "The player's revealed or defaulted action. Attack-specific source, target, and wager data use the shared action shape.",
+          "anyOf": [
+            { "$ref": "#/definitions/action" },
+            { "type": "null" }
+          ]
+        },
+        "colonies": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/colonyRoundHistory" }
+        }
+      }
+    },
+    "colonyRoundHistory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "colonyId", "allocation", "startingResources", "resourceChanges",
+        "endingResources"
+      ],
+      "properties": {
+        "colonyId": { "$ref": "definitions.schema.json#/definitions/uintString" },
+        "allocation": { "$ref": "#/definitions/resources" },
+        "startingResources": { "$ref": "#/definitions/resourceSnapshot" },
+        "resourceChanges": {
+          "type": "array",
+          "description": "Changes ordered by block number and log index.",
+          "items": { "$ref": "#/definitions/resourceChange" }
+        },
+        "endingResources": { "$ref": "#/definitions/resourceSnapshot" }
+      }
+    },
+    "resourceChange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["blockNumber", "transactionHash", "logIndex", "delta", "resourcesAfter"],
+      "properties": {
+        "blockNumber": { "$ref": "definitions.schema.json#/definitions/uintString" },
+        "transactionHash": { "$ref": "definitions.schema.json#/definitions/bytes32" },
+        "logIndex": { "$ref": "definitions.schema.json#/definitions/uintString" },
+        "delta": { "$ref": "#/definitions/resourceDelta" },
+        "resourcesAfter": { "$ref": "#/definitions/resourceSnapshot" }
       }
     },
     "neighbor": {

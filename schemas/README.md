@@ -27,6 +27,17 @@ Player documents are indexer-owned and primarily contain blockchain-derived play
 colony state. A colony's `worldState` property is only a reference; visual state is not
 embedded in the player document.
 
+Player `roundHistory` is an ascending, per-round ledger. The round-level `action` stores
+the revealed or defaulted action, including attack source colony, target player, target
+colony, and wager. Each colony entry records its allocation, starting and ending resource
+snapshots, and ordered resource changes. Changes are ordered by block number and log
+index; signed decimal deltas are derived by comparing consecutive
+`ColonyResourcesUpdated` snapshots. Battle outcomes remain in the existing battle-result
+documents and are not duplicated in this ledger.
+This required history field makes the player document schema version `2`; consumers of
+version `1` player documents should treat a missing history as an empty array during
+migration.
+
 World-state documents are frontend-originated visual colony data. The backend will
 eventually validate and publish their public form alongside the rest of a snapshot. The
 current `world-state.schema.json` is intentionally provisional: its `buildings` entries are

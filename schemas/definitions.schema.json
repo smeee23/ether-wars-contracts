@@ -7,6 +7,10 @@
       "type": "string",
       "pattern": "^(0|[1-9][0-9]*)$"
     },
+    "intString": {
+      "type": "string",
+      "pattern": "^-?(0|[1-9][0-9]*)$"
+    },
     "address": {
       "type": "string",
       "pattern": "^0x[0-9a-fA-F]{40}$"

@@ -1197,6 +1197,52 @@ describe("BattleManager connected conflict groups", function () {
     expect(resources.attack.toString()).to.equal("5");
   });
 
+  it("emits colony resource snapshots after allocation and mining settlement", async function () {
+    const ctx = await deployGame(2);
+    const [a] = ctx.players;
+    const colonyId = await firstColonyOf(ctx, a);
+    const roundId = await startRound(ctx);
+    queueAllocation(ctx, a, colonyId, {
+      attack: 10,
+      defense: 20,
+      mining: 100,
+      infrastructure: 30,
+    });
+    const salt = await commitAction(ctx, a, roundId, defend(), "resource-events");
+
+    await revealPhase();
+    await revealAction(ctx, a, defend(), salt);
+    await resolvePhase();
+    await requestRoundRandomness(ctx, roundId);
+    const allocationTx = await ctx.tournament.resolveTableConflicts(1, roundId);
+    const allocationReceipt = await allocationTx.wait();
+    const allocationEvents = await ctx.tournament.queryFilter(
+      ctx.tournament.filters.ColonyResourcesUpdated(roundId, colonyId, a.address),
+      allocationReceipt.blockNumber,
+      allocationReceipt.blockNumber
+    );
+
+    expect(allocationEvents.length).to.equal(1);
+    expect(allocationEvents[0].args.gold.toString()).to.equal("840");
+    expect(allocationEvents[0].args.attack.toString()).to.equal("10");
+    expect(allocationEvents[0].args.defense.toString()).to.equal("20");
+    expect(allocationEvents[0].args.mining.toString()).to.equal("100");
+    expect(allocationEvents[0].args.infrastructure.toString()).to.equal("30");
+
+    await ctx.tournament.endBattleRound();
+    const miningTx = await ctx.tournament.processMiningBatch(25);
+    const miningReceipt = await miningTx.wait();
+    const miningEvents = await ctx.tournament.queryFilter(
+      ctx.tournament.filters.ColonyResourcesUpdated(roundId, colonyId, a.address),
+      miningReceipt.blockNumber,
+      miningReceipt.blockNumber
+    );
+
+    expect(miningEvents.length).to.equal(1);
+    expect(miningEvents[0].args.gold.toString()).to.equal("840");
+    expect(miningEvents[0].args.mining.toString()).to.equal("100");
+  });
+
   it("rejects a plan whose allocation and wager exceed isolated colony gold", async function () {
     const ctx = await deployGame(2);
     const [a, b] = ctx.players;
@@ -1444,12 +1490,26 @@ describe("BattleManager connected conflict groups", function () {
     await revealPhase();
     await revealAction(ctx, a, aAction, aSalt);
     await resolvePhase();
-    await resolveTable(ctx, roundId);
+    await requestRoundRandomness(ctx, roundId);
+    const tx = await ctx.tournament.resolveTableConflicts(1, roundId);
+    const receipt = await tx.wait();
 
     const aLandLord = await landLordOf(ctx, a);
     const bLandLord = await landLordOf(ctx, b);
     expect((await aLandLord.getGold()).toString()).to.equal("1080");
     expect((await bLandLord.getGold()).toString()).to.equal("920");
+
+    const resourceEvents = await ctx.tournament.queryFilter(
+      ctx.tournament.filters.ColonyResourcesUpdated(roundId),
+      receipt.blockNumber,
+      receipt.blockNumber
+    );
+    expect(resourceEvents.length).to.equal(2);
+    const byPlayer = new Map(
+      resourceEvents.map((event) => [event.args.player, event.args])
+    );
+    expect(byPlayer.get(a.address).gold.toString()).to.equal("1080");
+    expect(byPlayer.get(b.address).gold.toString()).to.equal("920");
   });
 
   it("uses the largest attack wager as groupStake in a three-player group", async function () {

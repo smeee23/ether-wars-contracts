@@ -67,7 +67,7 @@ contract LandLord is Initializable {
     event GoldSpent(uint256 amount);
     event GoldAwarded(uint256 amount);
     event GoldTransferred(address indexed toLandLord, uint256 amount);
-    event ResourceAllocated(ResourceType indexed resource, uint256 goldSpent, uint256 amountAdded);
+    event ResourceAllocated(ResourceType indexed resource, uint256 indexed roundId, uint256 goldSpent, uint256 amountAdded);
     event SuccessfulBuildApplied(uint256 indexed round, uint256 successfulBuildCount);
     event MiningYieldCredited(
         uint256 indexed round,
@@ -102,15 +102,16 @@ contract LandLord is Initializable {
         uint256 attack,
         uint256 defense,
         uint256 mining,
-        uint256 infrastructure
+        uint256 infrastructure, 
+        uint256 roundId
     ) external onlyController {
         uint256 totalGold = attack + defense + mining + infrastructure;
         if (totalGold == 0) return;
         _spendGold(totalGold);
-        _addAllocatedResource(ResourceType.Attack, attack);
-        _addAllocatedResource(ResourceType.Defense, defense);
-        _addAllocatedResource(ResourceType.Mining, mining);
-        _addAllocatedResource(ResourceType.Infrastructure, infrastructure);
+        _addAllocatedResource(ResourceType.Attack, attack, roundId);
+        _addAllocatedResource(ResourceType.Defense, defense, roundId);
+        _addAllocatedResource(ResourceType.Mining, mining, roundId);
+        _addAllocatedResource(ResourceType.Infrastructure, infrastructure, roundId);
     }
 
     function settleMining(uint256 roundId)
@@ -231,7 +232,7 @@ contract LandLord is Initializable {
         emit GoldAwarded(amount);
     }
 
-    function _addAllocatedResource(ResourceType resource, uint256 goldAmount) internal {
+    function _addAllocatedResource(ResourceType resource, uint256 goldAmount, uint256 roundId) internal {
         if (goldAmount == 0) return;
         uint256 allocated = goldAmount * GOLD_ALLOCATION_RATE;
         if (allocated > type(uint128).max) revert AllocationOverflow();
@@ -239,7 +240,7 @@ contract LandLord is Initializable {
         else if (resource == ResourceType.Defense) resources.defense = _add128(resources.defense, allocated);
         else if (resource == ResourceType.Mining) resources.mining = _add128(resources.mining, allocated);
         else resources.infrastructure = _add128(resources.infrastructure, allocated);
-        emit ResourceAllocated(resource, goldAmount, allocated);
+        emit ResourceAllocated(resource, roundId, goldAmount, allocated);
     }
 
     function _add128(uint128 current, uint256 amount) internal pure returns (uint128) {
