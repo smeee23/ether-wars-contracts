@@ -255,6 +255,34 @@ describe("TournamentManager VRF timeout and retry", function () {
     );
   });
 
+  it("emits the fulfilled VRF state with the request and randomness", async function () {
+    const ctx = await deployGame();
+    await moveToResolve();
+    const active = await request(ctx);
+    const requestedState = await ctx.tournament.roundVrfState(1);
+
+    const tx = await ctx.vrf.fulfill(active.requestId, 123);
+    const receipt = await tx.wait();
+    const fulfilled = receipt.events
+      .map((candidate) => {
+        try {
+          return ctx.tournament.interface.parseLog(candidate);
+        } catch (_) {
+          return undefined;
+        }
+      })
+      .find((candidate) => candidate && candidate.name === "RoundRandomnessFulfilled");
+
+    expect(fulfilled.args.roundId.toString()).to.equal("1");
+    expect(fulfilled.args.requestId.toString()).to.equal(active.requestId.toString());
+    expect(fulfilled.args.randomness.toString()).to.equal("123");
+    expect(fulfilled.args.requestedAt.toString()).to.equal(
+      requestedState.requestedAt.toString()
+    );
+    expect(fulfilled.args.attempts.toString()).to.equal("1");
+    expect(fulfilled.args.fulfilled).to.equal(true);
+  });
+
   it("rejects callbacks for unknown request IDs", async function () {
     const ctx = await deployGame();
     await moveToResolve();

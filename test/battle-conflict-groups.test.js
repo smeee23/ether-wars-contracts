@@ -816,6 +816,52 @@ describe("BattleManager connected conflict groups", function () {
     );
   });
 
+  it("emits every finalization phase change", async function () {
+    const ctx = await deployGame(2);
+    await fundAllSurvival(ctx);
+    const roundId = await startRound(ctx);
+    const reveals = [];
+    for (const player of ctx.players) {
+      const salt = await commitAction(
+        ctx,
+        player,
+        roundId,
+        defend(),
+        `phase-events-${player.address}`
+      );
+      reveals.push({ player, salt });
+    }
+    await revealPhase();
+    for (const item of reveals) {
+      await revealAction(ctx, item.player, defend(), item.salt);
+    }
+    await resolvePhase();
+    await resolveTable(ctx, roundId);
+
+    const startReceipt = await (await ctx.tournament.endBattleRound()).wait();
+    await completeActiveFinalization(ctx, 10);
+
+    const events = await ctx.tournament.queryFilter(
+      ctx.tournament.filters.FinalizationPhaseChanged(roundId),
+      startReceipt.blockNumber,
+      "latest"
+    );
+    expect(
+      events.map((event) => [
+        Number(event.args.previousPhase),
+        Number(event.args.newPhase),
+      ])
+    ).to.deep.equal([
+      [0, 1],
+      [1, 2],
+      [2, 3],
+      [3, 4],
+      [4, 5],
+      [5, 8],
+      [8, 0],
+    ]);
+  });
+
   it("processes population insolvency in bounded player batches", async function () {
     const ctx = await deployGame(3);
     const [atThreshold, aboveThreshold] = ctx.players;

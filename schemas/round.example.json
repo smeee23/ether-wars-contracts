@@ -9,7 +9,7 @@
     "blockHash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "timestamp": "1785971100"
   },
-  "roundNumber": "8",
+  "roundId": "8",
   "status": "FINALIZED",
   "timing": {
     "commitStartTimestamp": "1785949200",

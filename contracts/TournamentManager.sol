@@ -224,10 +224,18 @@ contract TournamentManager is ReentrancyGuard {
     event RoundRandomnessFulfilled(
         uint256 indexed roundId,
         uint256 indexed requestId,
-        uint256 randomness
+        uint256 randomness,
+        uint256 requestedAt,
+        uint256 attempts,
+        bool fulfilled
     );
     event RoundEnded(uint256 indexed roundId);
-    event PlayerEliminated(address indexed player);
+    event FinalizationPhaseChanged(
+        uint256 indexed roundId,
+        FinalizationPhase previousPhase,
+        FinalizationPhase newPhase
+    );
+    event PlayerEliminated(address indexed player, uint256 indexed tableId);
     event ConflictGoldSettled(
         uint256 indexed roundId,
         address indexed winner,
@@ -504,7 +512,7 @@ contract TournamentManager is ReentrancyGuard {
         }
 
         roundFinalization = RoundFinalization({
-            phase: FinalizationPhase.MiningSettlement,
+            phase: FinalizationPhase.None,
             playerCursor: 0,
             tableCursor: 0,
             targetTableCount: 0,
@@ -516,7 +524,7 @@ contract TournamentManager is ReentrancyGuard {
             largestTableId: 0,
             largestSize: 0
         });
-
+        _setFinalizationPhase(FinalizationPhase.MiningSettlement);
     }
 
     function processMiningBatch(uint256 maxPlayers)
@@ -536,7 +544,7 @@ contract TournamentManager is ReentrancyGuard {
         }
         roundFinalization.playerCursor = end;
         if (end != players.length) return;
-        roundFinalization.phase = FinalizationPhase.PopulationChecks;
+        _setFinalizationPhase(FinalizationPhase.PopulationChecks);
         roundFinalization.playerCursor = 0;
     }
 
@@ -564,7 +572,7 @@ contract TournamentManager is ReentrancyGuard {
             _completeTournament();
             return;
         }
-        roundFinalization.phase = FinalizationPhase.AutomaticExpansions;
+        _setFinalizationPhase(FinalizationPhase.AutomaticExpansions);
         roundFinalization.playerCursor = 0;
     }
 
@@ -594,7 +602,7 @@ contract TournamentManager is ReentrancyGuard {
 
         roundFinalization.playerCursor = end;
         if (end != players.length) return;
-        roundFinalization.phase = FinalizationPhase.TableCompaction;
+        _setFinalizationPhase(FinalizationPhase.TableCompaction);
         roundFinalization.tableCursor = 1;
     }
 
@@ -619,7 +627,7 @@ contract TournamentManager is ReentrancyGuard {
             (activePlayers + MAX_TABLE_SIZE - 1) / MAX_TABLE_SIZE;
         roundFinalization.sourceTableId = tableCount;
         roundFinalization.destinationTableId = 1;
-        roundFinalization.phase = FinalizationPhase.TableConsolidation;
+        _setFinalizationPhase(FinalizationPhase.TableConsolidation);
     }
 
     function processTableConsolidationBatch(uint256 maxWork)
@@ -702,9 +710,9 @@ contract TournamentManager is ReentrancyGuard {
             roundFinalization.smallestSize <=
             3
         ) {
-            roundFinalization.phase = FinalizationPhase.ReadyToFinalize;
+            _setFinalizationPhase(FinalizationPhase.ReadyToFinalize);
         } else {
-            roundFinalization.phase = FinalizationPhase.BalanceMove;
+            _setFinalizationPhase(FinalizationPhase.BalanceMove);
         }
     }
 
@@ -733,6 +741,7 @@ contract TournamentManager is ReentrancyGuard {
         _requireFinalizationPhase(FinalizationPhase.ReadyToFinalize);
         uint256 roundId = lastStartedRound;
         lastEndedRound = roundId;
+        _setFinalizationPhase(FinalizationPhase.None);
         delete roundFinalization;
         emit RoundEnded(roundId);
     }
@@ -765,7 +774,14 @@ contract TournamentManager is ReentrancyGuard {
             randomness
         );
 
-        emit RoundRandomnessFulfilled(roundId, requestId, randomness);
+        emit RoundRandomnessFulfilled(
+            roundId,
+            requestId,
+            randomness,
+            requestState.requestedAt,
+            requestState.attempts,
+            requestState.fulfilled
+        );
     }
 
     function isRoundRandomnessRetryEligible(uint256 roundId)
@@ -1210,7 +1226,7 @@ contract TournamentManager is ReentrancyGuard {
         activePlayerXor ^= uint160(player);
         activePlayersByTable[tableId]--;
         if (activePlayersByTable[tableId] == 0) activeTableCount--;
-        emit PlayerEliminated(player);
+        emit PlayerEliminated(player, tableId);
         _unlockExpansionIfMilestoneReached();
     }
 
@@ -1232,6 +1248,7 @@ contract TournamentManager is ReentrancyGuard {
             winner = soleSurvivor;
             emit WinnerFinalized(soleSurvivor);
         }
+        _setFinalizationPhase(FinalizationPhase.None);
         delete roundFinalization;
         state = TournamentState.Complete;
         emit TournamentFinalized(tournamentId, winner, lastEndedRound);
@@ -1440,7 +1457,7 @@ contract TournamentManager is ReentrancyGuard {
 
     function _startBalanceScan() internal {
         if (tableCount <= 1) {
-            roundFinalization.phase = FinalizationPhase.ReadyToFinalize;
+            _setFinalizationPhase(FinalizationPhase.ReadyToFinalize);
             return;
         }
 
@@ -1450,7 +1467,19 @@ contract TournamentManager is ReentrancyGuard {
         roundFinalization.smallestSize = firstSize;
         roundFinalization.largestTableId = 1;
         roundFinalization.largestSize = firstSize;
-        roundFinalization.phase = FinalizationPhase.BalanceScan;
+        _setFinalizationPhase(FinalizationPhase.BalanceScan);
+    }
+
+    function _setFinalizationPhase(FinalizationPhase newPhase) internal {
+        FinalizationPhase previousPhase = roundFinalization.phase;
+        if (previousPhase == newPhase) return;
+
+        roundFinalization.phase = newPhase;
+        emit FinalizationPhaseChanged(
+            lastStartedRound,
+            previousPhase,
+            newPhase
+        );
     }
 
     function _requireBatchSize(uint256 requested, uint256 maximum)

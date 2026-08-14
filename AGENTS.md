@@ -45,3 +45,5 @@ Pull requests should include a concise description, key contract or frontend fil
 ## Security & Configuration Tips
 
 Do not commit private keys, mnemonics, RPC secrets, generated caches, or local deployment artifacts. Treat yield adapter, settlement, randomness, and access-control changes as high risk and document assumptions clearly in the PR.
+
+Load this skill .agents/skills/ethskills/SKILL.MD 
