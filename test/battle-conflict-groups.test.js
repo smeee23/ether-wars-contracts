@@ -633,6 +633,28 @@ describe("BattleManager connected conflict groups", function () {
     expect((await ctx.battleManager.resolvedTableCount(roundId)).toString()).to.equal("1");
   });
 
+  it("emits TableResolved after processing every player at the table", async function () {
+    const ctx = await deployGame(2);
+    const roundId = await startRound(ctx);
+
+    await revealPhase();
+    await resolvePhase();
+    await requestRoundRandomness(ctx, roundId);
+
+    const tx = await ctx.tournament.resolveTableConflicts(1, roundId);
+    const receipt = await tx.wait();
+    const events = await ctx.battleManager.queryFilter(
+      ctx.battleManager.filters.TableResolved(roundId, 1),
+      receipt.blockNumber,
+      receipt.blockNumber
+    );
+
+    expect(events).to.have.lengthOf(1);
+    expect(events[0].args.roundId.toString()).to.equal(String(roundId));
+    expect(events[0].args.tableId.toString()).to.equal("1");
+    expect(await ctx.battleManager.tableConflictsResolved(roundId, 1)).to.equal(true);
+  });
+
   it("ends a round after all required tables are resolved", async function () {
     const ctx = await deployGame(10);
     const roundId = await startRound(ctx);

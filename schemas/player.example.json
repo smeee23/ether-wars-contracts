@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "chainId": "1",
   "tournamentAddress": "0x1111111111111111111111111111111111111111",
   "tournamentId": "42",
@@ -56,9 +56,7 @@
         "miningInfrastructureBonusBps": "1050"
       },
       "economy": {
-        "baseMiningYield": "15",
-        "projectedMiningYield": "16",
-        "projectedNetGoldChange": "16"
+        "baseMiningYield": "15"
       },
       "worldState": {
         "path": "../world-states/12/1.json",

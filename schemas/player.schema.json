@@ -11,7 +11,7 @@
     "colonies", "roundState", "roundHistory", "neighbors"
   ],
   "properties": {
-    "schemaVersion": { "type": "integer", "const": 2 },
+    "schemaVersion": { "type": "integer", "const": 3 },
     "chainId": { "$ref": "definitions.schema.json#/definitions/uintString" },
     "tournamentAddress": { "$ref": "definitions.schema.json#/definitions/address" },
     "tournamentId": { "$ref": "definitions.schema.json#/definitions/uintString" },
@@ -129,14 +129,9 @@
         "economy": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["baseMiningYield", "projectedMiningYield", "projectedNetGoldChange"],
+          "required": ["baseMiningYield"],
           "properties": {
-            "baseMiningYield": { "$ref": "definitions.schema.json#/definitions/uintString" },
-            "projectedMiningYield": { "$ref": "definitions.schema.json#/definitions/uintString" },
-            "projectedNetGoldChange": {
-              "type": "string",
-              "pattern": "^-?(0|[1-9][0-9]*)$"
-            }
+            "baseMiningYield": { "$ref": "definitions.schema.json#/definitions/uintString" }
           }
         },
         "worldState": {

@@ -179,6 +179,10 @@ contract BattleManager is ReentrancyGuard {
         uint256 groupStake,
         uint256 totalGoldTransferred
     );
+    event TableResolved(
+        uint256 indexed roundId,
+        uint256 indexed tableId
+    );
     event RoundRandomnessSet(uint256 indexed roundId, uint256 randomness);
 
     // =========================
@@ -383,6 +387,7 @@ contract BattleManager is ReentrancyGuard {
         _applyUncontestedBuilds(players, actions);
         tableResolvedRound[tableId] = roundId;
         resolvedTableCount[roundId]++;
+        emit TableResolved(roundId, tableId);
     }
 
     // =========================

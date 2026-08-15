@@ -175,7 +175,7 @@ contract TournamentManager is ReentrancyGuard {
         address indexed landLord,
         uint256 createdRound
     );
-    event ColonyEliminated(uint256 indexed colonyId, address indexed owner);
+    event ColonyEliminated(uint256 indexed colonyId, address indexed owner, uint256 indexed roundId);
     event TournamentStarted();
     event TournamentCompleted();
     event TournamentFinalized(
@@ -235,7 +235,11 @@ contract TournamentManager is ReentrancyGuard {
         FinalizationPhase previousPhase,
         FinalizationPhase newPhase
     );
-    event PlayerEliminated(address indexed player, uint256 indexed tableId);
+    event PlayerEliminated(
+        address indexed player, 
+        uint256 indexed tableId, 
+        uint256 indexed roundId
+    );
     event ConflictGoldSettled(
         uint256 indexed roundId,
         address indexed winner,
@@ -1210,7 +1214,7 @@ contract TournamentManager is ReentrancyGuard {
 
         colony.active = false;
         activeColonyCount[colony.owner]--;
-        emit ColonyEliminated(colonyId, colony.owner);
+        emit ColonyEliminated(colonyId, colony.owner, lastStartedRound);
 
         if (activeColonyCount[colony.owner] == 0 && playerInfo[colony.owner].active) {
             _eliminatePlayer(colony.owner);
@@ -1226,7 +1230,7 @@ contract TournamentManager is ReentrancyGuard {
         activePlayerXor ^= uint160(player);
         activePlayersByTable[tableId]--;
         if (activePlayersByTable[tableId] == 0) activeTableCount--;
-        emit PlayerEliminated(player, tableId);
+        emit PlayerEliminated(player, tableId, lastStartedRound);
         _unlockExpansionIfMilestoneReached();
     }
 

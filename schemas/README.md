@@ -38,6 +38,11 @@ This required history field makes the player document schema version `2`; consum
 version `1` player documents should treat a missing history as an empty array during
 migration.
 
+Player schema version `3` removes `projectedMiningYield` and
+`projectedNetGoldChange` from colony economy data. Producers must omit these fields;
+consumers that need projections should calculate them outside the canonical indexed
+player document.
+
 World-state documents are frontend-originated visual colony data. The backend will
 eventually validate and publish their public form alongside the rest of a snapshot. The
 current `world-state.schema.json` is intentionally provisional: its `buildings` entries are
@@ -50,5 +55,3 @@ verify that a referenced path exists or that its player and colony identities ma
 that cross-document integrity check to the backend snapshot validator when it is built.
 
 The canonical resource model is Gold plus Attack, Defense, Mining, and Infrastructure.
-Projected economy fields should be recalculated at the snapshot block and must not be
-treated as already-settled transfers.
